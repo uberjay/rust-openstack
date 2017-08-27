@@ -19,10 +19,8 @@ use std::fmt;
 use std::io;
 use std::str::FromStr;
 
-use hyper::Error as HttpClientError;
+use hyper::{Error as HttpClientError, StatusCode};
 use hyper::client::Response;
-use hyper::error::ParseError;
-use hyper::status::StatusCode;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::{Error as DeserError, Visitor};
 use serde_json::Error as JsonError;
@@ -154,12 +152,6 @@ impl From<io::Error> for ApiError {
 impl From<JsonError> for ApiError {
     fn from(value: JsonError) -> ApiError {
         ApiError::InvalidJson(value)
-    }
-}
-
-impl From<ParseError> for ApiError {
-    fn from(value: ParseError) -> ApiError {
-        ApiError::ProtocolError(HttpClientError::Uri(value))
     }
 }
 

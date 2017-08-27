@@ -20,17 +20,13 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 
-use hyper::{Client, Get, Url};
+use hyper::{Client, Get, Method, Request, Response, StatusCode, Uri};
 use hyper::Error as HttpClientError;
-use hyper::client::{IntoUrl, Response};
-use hyper::error::ParseError;
 use hyper::header::{ContentType, Headers};
-use hyper::method::Method;
-use hyper::status::StatusCode;
+use hyper_rustls::HttpsConnector;
 
 use super::super::{ApiError, ApiResult};
 use super::super::identity::{catalog, protocol};
-use super::super::service::RequestBuilder;
 use super::super::utils::ValueCache;
 use super::AuthMethod;
 
@@ -65,7 +61,7 @@ impl Hash for Token {
 /// Authentication method factory using Identity API V3.
 #[derive(Clone, Debug)]
 pub struct Identity {
-    auth_url: Url,
+    auth_url: Uri,
     password_identity: Option<protocol::PasswordIdentity>,
     project_scope: Option<protocol::ProjectScope>
 }
@@ -75,7 +71,7 @@ pub struct Identity {
 /// Has to be created via [Identity object](struct.Identity.html) methods.
 #[derive(Clone, Debug)]
 pub struct PasswordAuth {
-    auth_url: Url,
+    auth_url: Uri,
     body: protocol::ProjectScopedAuthRoot,
     token_endpoint: String,
     cached_token: ValueCache<Token>
@@ -83,14 +79,14 @@ pub struct PasswordAuth {
 
 impl Identity {
     /// Get a reference to the auth URL.
-    pub fn get_auth_url(&self) -> &Url {
+    pub fn get_auth_url(&self) -> &Uri {
         &self.auth_url
     }
 
     /// Create a password authentication against the given Identity service.
-    pub fn new<U>(auth_url: U) -> Result<Identity, ParseError> where U: IntoUrl  {
+    pub fn new(auth_uri: Uri) -> Identity {
         Ok(Identity {
-            auth_url: auth_url.into_url()?,
+            auth_url: auth_uri,
             password_identity: None,
             project_scope: None,
         })
@@ -172,11 +168,11 @@ fn _get_env(name: &str) -> ApiResult<String> {
 
 impl PasswordAuth {
     /// Get a reference to the auth URL.
-    pub fn get_auth_url(&self) -> &Url {
+    pub fn get_auth_url(&self) -> &Uri {
         &self.auth_url
     }
 
-    fn new(auth_url: Url, password_identity: protocol::PasswordIdentity,
+    fn new(auth_url: Uri, password_identity: protocol::PasswordIdentity,
            project_scope: protocol::ProjectScope) -> PasswordAuth {
         let body = protocol::ProjectScopedAuthRoot::new(password_identity,
                                                         project_scope);
@@ -231,7 +227,7 @@ impl PasswordAuth {
         Ok(Token(token_value))
     }
 
-    fn refresh_token(&self, client: &Client) -> ApiResult<()> {
+    fn refresh_token(&self, client: &Client<HttpsConnector>) -> ApiResult<()> {
         // TODO: refresh on expiration
         self.cached_token.ensure_value(|| {
             debug!("Requesting a token for user {} from {}",
@@ -244,12 +240,12 @@ impl PasswordAuth {
         })
     }
 
-    fn get_token(&self, client: &Client) -> ApiResult<String> {
+    fn get_token(&self, client: &Client<HttpsConnector>) -> ApiResult<String> {
         self.refresh_token(client)?;
         Ok(self.cached_token.get().unwrap().0)
     }
 
-    fn get_catalog(&self, client: &Client)
+    fn get_catalog(&self, client: &Client<HttpsConnector>)
             -> ApiResult<Vec<protocol::CatalogRecord>> {
         // TODO: catalog caching
         let catalog_url = catalog::get_url(self.auth_url.clone());
@@ -263,18 +259,19 @@ impl PasswordAuth {
 
 impl AuthMethod for PasswordAuth {
     /// Create an authenticated request.
-    fn request<'a>(&self, client: &'a Client, method: Method, url: Url,
-                   headers: Headers) -> ApiResult<RequestBuilder<'a>> {
+    fn request<'a>(&self, client: &Client<HttpsConnector>,
+                   method: Method, url: Uri) -> ApiResult<Request> {
         let token = self.get_token(client)?;
-        Ok(RequestBuilder::new(client, method, url, headers)
-           .header(protocol::AuthTokenHeader(token)))
+        let request = Request::new(method, url);
+        request.headers_mut().set(protocol::AuthTokenHeader(token));
+        Ok(request)
     }
 
     /// Get a URL for the requested service.
-    fn get_endpoint(&self, client: &Client,
+    fn get_endpoint(&self, client: &Client<HttpsConnector>,
                     service_type: String,
                     endpoint_interface: Option<String>,
-                    region: Option<String>) -> ApiResult<Url> {
+                    region: Option<String>) -> ApiResult<Uri> {
         let real_interface = endpoint_interface.unwrap_or(
             self.default_endpoint_interface());
         debug!("Requesting a catalog endpoint for service '{}', interface \

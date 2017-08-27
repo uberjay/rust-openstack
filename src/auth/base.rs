@@ -16,12 +16,10 @@
 
 use std::fmt::Debug;
 
-use hyper::{Client, Url};
-use hyper::header::Headers;
-use hyper::method::Method;
+use hyper::{Client, Method, Request, Uri};
+use hyper_rustls::HttpsConnector;
 
 use super::super::ApiResult;
-use super::super::service::RequestBuilder;
 
 
 /// Trait for an authentication method.
@@ -42,14 +40,14 @@ pub trait AuthMethod: BoxedClone + Debug {
     fn default_region(&self) -> Option<String> { None }
 
     /// Get a URL for the requested service.
-    fn get_endpoint(&self, client: &Client,
+    fn get_endpoint(&self, client: &Client<HttpsConnector>,
                     service_type: String,
                     endpoint_interface: Option<String>,
-                    region: Option<String>) -> ApiResult<Url>;
+                    region: Option<String>) -> ApiResult<Uri>;
 
     /// Create an authenticated request.
-    fn request<'a>(&self, client: &'a Client, method: Method, url: Url,
-                   headers: Headers) -> ApiResult<RequestBuilder<'a>>;
+    fn request<'a>(&self, client: &Client<HttpsConnector>,
+                   method: Method, url: Uri) -> ApiResult<Request>;
 }
 
 

@@ -16,25 +16,16 @@
 
 use std::marker::PhantomData;
 
-use hyper::{Client, Url};
-use hyper::client::{Body, IntoUrl, RequestBuilder as HyperRequestBuilder,
-                    Response};
-use hyper::header::{Header, HeaderFormat, Headers};
-use hyper::method::Method;
+use futures::{future, Future, Poll};
+use hyper::{Body, Client, Headers, Method, Request, Response, Uri};
+use hyper::client::FutureResponse;
+use hyper::header::Header;
 use serde::{Deserialize, Serialize};
 use serde_json;
 
 use super::{ApiError, ApiResult, ApiVersion, ApiVersionRequest, Session};
 use super::utils;
 
-
-/// Request builder with error checking and JSON support.
-///
-/// Partly copies the interface of hyper::client::RequestBuilder.
-#[allow(missing_debug_implementations)]
-pub struct RequestBuilder<'a> {
-    inner: HyperRequestBuilder<'a>
-}
 
 /// Type of query parameters.
 #[derive(Clone, Debug)]
@@ -44,7 +35,7 @@ pub struct Query(pub Vec<(String, String)>);
 #[derive(Clone, Debug)]
 pub struct ServiceInfo {
     /// Root endpoint.
-    pub root_url: Url,
+    pub root_url: Uri,
     /// Current API version (if supported).
     pub current_version: Option<ApiVersion>,
     /// Minimum API version (if supported).
@@ -57,7 +48,7 @@ pub trait ServiceType {
     fn catalog_type() -> &'static str;
 
     /// Get basic service information.
-    fn service_info(endpoint: Url, session: &Session)
+    fn service_info(endpoint: Uri, session: &Session)
         -> ApiResult<ServiceInfo>;
 }
 
@@ -66,6 +57,10 @@ pub trait ApiVersioning {
     /// Return headers to set for this API version.
     fn api_version_headers(version: ApiVersion) -> ApiResult<Headers>;
 }
+
+/// An asynchronous response from the API.
+#[derive(Debug)]
+pub struct ApiResponse(FutureResponse);
 
 /// A service-specific wrapper around Session.
 #[derive(Debug)]
@@ -95,54 +90,37 @@ impl Query {
     }
 }
 
-impl<'a> RequestBuilder<'a> {
-    /// Wrap a request builder.
-    pub fn new<U>(client: &'a Client, method: Method, url: U, headers: Headers)
-            -> RequestBuilder<'a> where U: IntoUrl {
-        RequestBuilder {
-            inner: client.request(method, url).headers(headers)
-        }
+impl ApiResponse {
+    /// Wrap a response future.
+    pub fn new(future: FutureResponse) -> ApiResponse {
+        ApiResponse(future)
     }
+}
 
-    /// Send this request.
-    pub fn send(self) -> ApiResult<Response> {
-        let resp = self.send_unchecked()?;
-        if resp.status.is_success() {
-            Ok(resp)
-        } else {
-            Err(ApiError::HttpError(resp.status, resp))
-        }
-    }
+impl Future for ApiResponse {
+    type Item = Response;
+    type Error = ApiError;
 
-    /// Send this request without checking on status code.
-    pub fn send_unchecked(self) -> ApiResult<Response> {
-        self.inner.send().map_err(From::from).map(|resp| {
-            trace!("Got {} from {} with {:?}",
-                   resp.status, resp.url, resp.headers);
-            resp
+    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
+        self.0.poll().map_err(From::from).then(|result| {
+            match result {
+                Ok(resp) => {
+                    let status = resp.status();
+                    if status.is_success() {
+                        future::ok(resp)
+                    } else {
+                        future::err(ApiError::HttpError(status, resp))
+                    }
+                },
+                Err(err) => future::err(err)
+            }
         })
     }
+}
 
-    /// Send this request and parse JSON response on success.
-    pub fn fetch_json<T>(self) -> ApiResult<T>
-            where for<'de> T: Deserialize<'de> {
-        serde_json::from_reader(self.send()?).map_err(From::from)
-    }
-
-    /// Add body to the request.
-    pub fn body<B: Into<Body<'a>>>(self, body: B) -> RequestBuilder<'a> {
-        RequestBuilder {
-            inner: self.inner.body(body)
-        }
-    }
-
-    /// Add an individual header to the request.
-    pub fn header<H: Header + HeaderFormat>(self, header: H)
-            -> RequestBuilder<'a> {
-        RequestBuilder {
-            inner: self.inner.header(header)
-        }
-    }
+fn fetch_json<T>(resp: Response) -> ApiResult<T>
+        where for<'de> T: Deserialize<'de> {
+    serde_json::from_reader(resp).map_err(From::from)
 }
 
 impl<'session, Srv: ServiceType> ServiceWrapper<'session, Srv> {
@@ -165,24 +143,25 @@ impl<'session, Srv: ServiceType> ServiceWrapper<'session, Srv> {
     }
 
     /// Construct and endpoint for the given service from the path.
-    pub fn get_endpoint<P>(&self, path: P, query: Query) -> ApiResult<Url>
+    pub fn get_endpoint<P>(&self, path: P, query: Query) -> ApiResult<Uri>
             where P: IntoIterator, P::Item: AsRef<str> {
         let ep = self.endpoint_interface.clone();
         let info = self.session.get_service_info::<Srv>(ep)?;
-        let mut url = utils::url::extend(info.root_url, path);
-        let _ = url.query_pairs_mut().extend_pairs(query.0);
-        Ok(url)
+        let mut uri = utils::url::extend(info.root_url, path);
+        let _ = uri.query_pairs_mut().extend_pairs(query.0);
+        Ok(uri)
     }
 
     /// Make an HTTP request to the given service.
-    pub fn request<P>(&'session self, method: Method, path: P, query: Query)
-            -> ApiResult<RequestBuilder<'session>>
-            where P: IntoIterator, P::Item: AsRef<str> {
-        let url = self.get_endpoint(path, query)?;
+    pub fn request<P>(&self, method: Method, path: P, query: Query)
+            -> ApiResult<Request> where P: IntoIterator, P::Item: AsRef<str> {
+        let uri = self.get_endpoint(path, query)?;
         let headers = self.session.service_headers::<Srv>();
         trace!("Sending HTTP {} request to {} with {:?}",
-               method, url, headers);
-        self.session.request(method, url, headers)
+               method, uri, headers);
+        let request = self.session.request(method, uri);
+        request.headers_mut().extend(headers);
+        request
     }
 
     /// Make an HTTP request with JSON body and JSON response.

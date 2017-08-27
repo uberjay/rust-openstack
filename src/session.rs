@@ -17,16 +17,17 @@
 use std::cell::Ref;
 use std::collections::HashMap;
 
-use hyper::{Client, Url};
-use hyper::client::IntoUrl;
-use hyper::header::Headers;
-use hyper::method::Method;
+use hyper::{Client, Headers, Method, Request, Uri};
+use hyper_rustls::HttpsConnector;
+use tokio_core::reactor::Handle;
 
 use super::{ApiError, ApiResult, ApiVersion, ApiVersionRequest};
 use super::auth::AuthMethod;
 use super::service::{ApiVersioning, RequestBuilder, ServiceInfo, ServiceType};
 use super::utils;
 
+
+type HttpsClient = Client<HttpsConnector>;
 
 /// An OpenStack API session.
 ///
@@ -36,10 +37,11 @@ use super::utils;
 /// The session object also owns region and endpoint interface to use.
 ///
 /// Finally, the session object is responsible for API version negotiation.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Session {
     auth: Box<AuthMethod>,
-    client: Client,
+    handle: Handle,
+    client: HttpsClient,
     cached_info: utils::MapCache<(&'static str, String), ServiceInfo>,
     api_versions: HashMap<&'static str, (ApiVersion, Headers)>,
     region: Option<String>,
@@ -52,12 +54,15 @@ impl Session {
     ///
     /// The resulting session will use the default endpoint interface (usually,
     /// public) and the first available region.
-    pub fn new<Auth: AuthMethod + 'static>(auth_method: Auth) -> Session {
+    pub fn new<Auth: AuthMethod + 'static>(io_handle: Handle,
+                                           auth_method: Auth) -> Session {
         let ep = auth_method.default_endpoint_interface();
         let region = auth_method.default_region();
+        let cli = utils::http_client(&io_handle);
         Session {
             auth: Box::new(auth_method),
-            client: utils::http_client(),
+            handle: io_handle,
+            client: cli,
             cached_info: utils::MapCache::new(),
             api_versions: HashMap::new(),
             region: region,
@@ -71,6 +76,7 @@ impl Session {
     pub fn with_region<S: Into<String>>(self, region: S) -> Session {
         Session {
             auth: self.auth,
+            handle: self.handle,
             client: self.client,
             // ServiceInfo has to be refreshed
             cached_info: utils::MapCache::new(),
@@ -88,6 +94,7 @@ impl Session {
             -> Session where S: Into<String> {
         Session {
             auth: self.auth,
+            handle: self.handle,
             client: self.client,
             // ServiceInfo has to be refreshed
             cached_info: utils::MapCache::new(),
@@ -163,9 +170,8 @@ impl Session {
     }
 
     /// Prepare an HTTP request with authentication.
-    pub fn request<'a, U>(&'a self, method: Method, url: U, headers: Headers)
-            -> ApiResult<RequestBuilder<'a>> where U: IntoUrl {
-        self.auth.request(&self.client, method, url.into_url()?, headers)
+    pub fn request(&self, method: Method, uri: Uri) -> ApiResult<Request> {
+        self.auth.request(method, uri)
     }
 
     fn ensure_service_info<Srv>(&self, endpoint_interface: String)
@@ -180,7 +186,7 @@ impl Session {
         Ok(key)
     }
 
-    fn get_catalog_endpoint<S>(&self, service_type: S) -> ApiResult<Url>
+    fn get_catalog_endpoint<S>(&self, service_type: S) -> ApiResult<Uri>
             where S: Into<String> {
         self.auth.get_endpoint(&self.client,
                                service_type.into(),
@@ -192,21 +198,6 @@ impl Session {
             -> ApiResult<Ref<ServiceInfo>> where Srv: ServiceType {
         let key = self.ensure_service_info::<Srv>(endpoint_interface)?;
         Ok(self.cached_info.get_ref(&key).unwrap())
-    }
-}
-
-
-impl Clone for Session {
-    fn clone(&self) -> Session {
-        Session {
-            auth: self.auth.clone(),
-            // NOTE: hyper::Client does not support Clone
-            client: utils::http_client(),
-            cached_info: self.cached_info.clone(),
-            api_versions: self.api_versions.clone(),
-            region: self.region.clone(),
-            endpoint_interface: self.endpoint_interface.clone()
-        }
     }
 }
 
