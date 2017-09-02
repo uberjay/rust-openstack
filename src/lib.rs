@@ -60,6 +60,7 @@
         unused_results,
         while_true)]
 
+#[macro_use]
 extern crate futures;
 #[cfg(feature = "compute")]
 extern crate chrono;
@@ -82,6 +83,7 @@ mod common;
 #[cfg(feature = "compute")]
 pub mod compute;
 mod identity;
+mod http;
 pub mod service;
 mod session;
 mod utils;
@@ -91,4 +93,5 @@ pub use common::ApiResult;
 pub use common::ApiVersion;
 pub use common::ApiVersionRequest;
 pub use common::Sort;
+pub use http::ApiResponse;
 pub use session::Session;

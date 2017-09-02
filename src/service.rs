@@ -58,10 +58,6 @@ pub trait ApiVersioning {
     fn api_version_headers(version: ApiVersion) -> ApiResult<Headers>;
 }
 
-/// An asynchronous response from the API.
-#[derive(Debug)]
-pub struct ApiResponse(FutureResponse);
-
 /// A service-specific wrapper around Session.
 #[derive(Debug)]
 pub struct ServiceWrapper<'session, Srv: ServiceType> {
@@ -87,34 +83,6 @@ impl Query {
     pub fn push_str<K, V>(&mut self, param: K, value: V)
             where K: Into<String>, V: Into<String> {
         self.0.push((param.into(), value.into()))
-    }
-}
-
-impl ApiResponse {
-    /// Wrap a response future.
-    pub fn new(future: FutureResponse) -> ApiResponse {
-        ApiResponse(future)
-    }
-}
-
-impl Future for ApiResponse {
-    type Item = Response;
-    type Error = ApiError;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        self.0.poll().map_err(From::from).then(|result| {
-            match result {
-                Ok(resp) => {
-                    let status = resp.status();
-                    if status.is_success() {
-                        future::ok(resp)
-                    } else {
-                        future::err(ApiError::HttpError(status, resp))
-                    }
-                },
-                Err(err) => future::err(err)
-            }
-        })
     }
 }
 

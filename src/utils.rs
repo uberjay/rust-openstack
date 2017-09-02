@@ -20,21 +20,10 @@ use std::fmt::Display;
 use std::hash::Hash;
 use std::str::FromStr;
 
-use hyper::Client;
-use hyper_rustls::HttpsConnector;
 use serde::{Deserialize, Deserializer};
 use serde::de::Error as DeserError;
-use tokio_core::reactor::Handle;
 
 use super::ApiResult;
-
-const DEFAULT_DNS_THREADS: usize = 4;
-
-/// Create an HTTP(s) client.
-pub fn http_client(io_handle: &Handle) -> Client<HttpsConnector> {
-    let connector = HttpsConnector::new(DEFAULT_DNS_THREADS, io_handle);
-    Client::configure().connector(connector).build(io_handle)
-}
 
 /// Cached clone-able value.
 #[derive(Debug, Clone)]
