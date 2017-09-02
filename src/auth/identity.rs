@@ -20,14 +20,13 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
 
-use hyper::{Client, Get, Method, Request, Response, StatusCode, Uri};
+use hyper::{Body, Get, Method, Request, Response, StatusCode, Uri};
 use hyper::Error as HttpClientError;
 use hyper::header::{ContentType, Headers};
-use hyper_rustls::HttpsConnector;
 
 use super::super::{ApiError, ApiResult};
 use super::super::identity::{catalog, protocol};
-use super::super::utils::ValueCache;
+use super::super::utils;
 use super::AuthMethod;
 
 use ApiError::InvalidInput;
@@ -74,7 +73,8 @@ pub struct PasswordAuth {
     auth_url: Uri,
     body: protocol::ProjectScopedAuthRoot,
     token_endpoint: String,
-    cached_token: ValueCache<Token>
+    cached_token: utils::ValueCache<Token>,
+    client: utils::HttpsClient
 }
 
 impl Identity {
@@ -183,7 +183,8 @@ impl PasswordAuth {
             auth_url: auth_url,
             body: body,
             token_endpoint: token_endpoint,
-            cached_token: ValueCache::new(None)
+            cached_token: utils::ValueCache::new(None),
+            client: utils::http_client()
         }
     }
 
@@ -227,31 +228,31 @@ impl PasswordAuth {
         Ok(Token(token_value))
     }
 
-    fn refresh_token(&self, client: &Client<HttpsConnector>) -> ApiResult<()> {
+    fn refresh_token(&self) -> ApiResult<()> {
         // TODO: refresh on expiration
         self.cached_token.ensure_value(|| {
             debug!("Requesting a token for user {} from {}",
                    self.body.auth.identity.password.user.name,
                    self.token_endpoint);
             let body = self.body.to_string().unwrap();
-            let resp = client.post(&self.token_endpoint).body(&body)
+            let resp = self.client.post(&self.token_endpoint).body(&body)
                 .header(ContentType::json()).send()?;
             self.token_from_response(resp)
         })
     }
 
-    fn get_token(&self, client: &Client<HttpsConnector>) -> ApiResult<String> {
-        self.refresh_token(client)?;
+    fn get_token(&self) -> ApiResult<String> {
+        self.refresh_token()?;
         Ok(self.cached_token.get().unwrap().0)
     }
 
-    fn get_catalog(&self, client: &Client<HttpsConnector>)
-            -> ApiResult<Vec<protocol::CatalogRecord>> {
+    fn get_catalog(&self) -> ApiResult<Vec<protocol::CatalogRecord>> {
         // TODO: catalog caching
         let catalog_url = catalog::get_url(self.auth_url.clone());
         trace!("Requesting a service catalog from {}", catalog_url);
-        let req = self.request(client, Get, catalog_url, Headers::new())?;
-        let body: protocol::CatalogRoot = req.fetch_json()?;
+        let req = Request::new(Get, catalog_url);
+        let resp = self.request(req);
+        let body: protocol::CatalogRoot = resp.fetch_json()?;
         trace!("Received catalog: {:?}", body.catalog);
         Ok(body.catalog)
     }
@@ -259,24 +260,21 @@ impl PasswordAuth {
 
 impl AuthMethod for PasswordAuth {
     /// Create an authenticated request.
-    fn request<'a>(&self, client: &Client<HttpsConnector>,
-                   method: Method, url: Uri) -> ApiResult<Request> {
-        let token = self.get_token(client)?;
-        let request = Request::new(method, url);
+    fn request(&self, mut request: Request<Body>) -> ApiResult<Response> {
+        let token = self.get_token()?;
         request.headers_mut().set(protocol::AuthTokenHeader(token));
         Ok(request)
     }
 
     /// Get a URL for the requested service.
-    fn get_endpoint(&self, client: &Client<HttpsConnector>,
-                    service_type: String,
+    fn get_endpoint(&self, service_type: String,
                     endpoint_interface: Option<String>,
                     region: Option<String>) -> ApiResult<Uri> {
         let real_interface = endpoint_interface.unwrap_or(
             self.default_endpoint_interface());
         debug!("Requesting a catalog endpoint for service '{}', interface \
                '{}' from region {:?}", service_type, real_interface, region);
-        let cat = self.get_catalog(client)?;
+        let cat = self.get_catalog()?;
         let endp = catalog::find_endpoint(&cat, service_type,
                                           real_interface, region)?;
         info!("Received {:?}", endp);

@@ -14,10 +14,10 @@
 
 //! Simple authentication methods.
 
-use hyper::{Client, Method, Request, Uri};
-use hyper_rustls::HttpsConnector;
+use hyper::{Body, Client, Method, Request, Uri};
 
 use super::super::ApiResult;
+use super::super::utils;
 use super::AuthMethod;
 
 /// Authentication method that provides no authentication.
@@ -26,7 +26,8 @@ use super::AuthMethod;
 /// endpoint.
 #[derive(Clone, Debug)]
 pub struct NoAuth {
-    endpoint: Uri
+    endpoint: Uri,
+    client: utils::HttpsClient
 }
 
 impl NoAuth {
@@ -35,20 +36,21 @@ impl NoAuth {
     /// This endpoint will be returned in response to all get_endpoint calls
     /// of the [AuthMethod](trait.AuthMethod.html) trait.
     pub fn new(endpoint: Uri) -> NoAuth {
-        NoAuth { endpoint: endpoint }
+        NoAuth {
+            endpoint: endpoint,
+            client: utils::http_client()
+        }
     }
 }
 
 impl AuthMethod for NoAuth {
     /// Create a request.
-    fn request<'a>(&self, _client: &Client<HttpsConnector>,
-                   method: Method, uri: Uri) -> ApiResult<Request> {
-        Ok(Request::new(method, uri))
+    fn request(&self, request: Request<Body>) -> ApiResult<Response> {
+        self.client.request(request)
     }
 
     /// Get a predefined endpoint for all service types
-    fn get_endpoint(&self, _client: &Client<HttpsConnector>,
-                    _service_type: String,
+    fn get_endpoint(&self, _service_type: String,
                     _endpoint_interface: Option<String>,
                     _region: Option<String>) -> ApiResult<Uri> {
         Ok(self.endpoint.clone())
