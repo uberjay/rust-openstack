@@ -17,8 +17,10 @@
 use std::marker::PhantomData;
 
 use futures::{Async, future, Future, Poll, Stream};
+use futures::future::AndThen;
 use futures::stream::Concat2;
-use hyper::{Body, Chunk, Client as HyperClient, Request, Response};
+use hyper::{Body, Chunk, Client as HyperClient, Error as HyperError,
+            Request, Response};
 use hyper::client::FutureResponse;
 use hyper_rustls::HttpsConnector;
 use tokio_core::reactor::Handle;
@@ -37,8 +39,7 @@ pub struct ApiResponse(FutureResponse);
 
 /// Result of an API call.
 pub struct ApiResult<T> {
-    inner: ApiResponse,
-    body: Option<Concat2<Body>>,
+    inner: Box<Future<Item=Chunk, Error=ApiError> + 'static>,
     _marker: PhantomData<T>
 }
 
@@ -88,8 +89,9 @@ impl<T> ApiResult<T> {
     /// New result from a response.
     pub fn new(response: ApiResponse) -> ApiResult<T> {
         ApiResult {
-            inner: response,
-            body: None,
+            inner: Box::new(response.and_then(|res| {
+                res.body().concat2().map_err(From::from)
+            })),
             _marker: PhantomData
         }
     }
@@ -100,14 +102,7 @@ impl<T> Future for ApiResult<T> where T: ParseBody {
     type Error = ApiError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        // Cache the body to avoid running self.inner.poll() more than once
-        if self.body.is_none() {
-            let resp = try_ready!(self.inner.poll());
-            self.body = Some(resp.body().concat2());
-        }
-
-        let maybe_body = self.body.as_mut().unwrap();
-        let chunk = try_ready!(maybe_body.poll());
+        let chunk = try_ready!(self.inner.poll());
         ParseBody::parse_body(&chunk).map(Async::Ready)
     }
 }
