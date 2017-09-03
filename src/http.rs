@@ -20,13 +20,18 @@ use futures::{Async, future, Future, Poll, Stream};
 use futures::future::AndThen;
 use futures::stream::Concat2;
 use hyper::{Body, Chunk, Client as HyperClient, Error as HyperError,
-            Request, Response};
+            Request as HyperRequest, Response};
 use hyper::client::FutureResponse;
 use hyper_rustls::HttpsConnector;
+use serde::Deserialize;
+use serde_json;
 use tokio_core::reactor::Handle;
 
 use super::ApiError;
 
+
+/// Convenient redefinition of request.
+pub type Request = HyperRequest<Body>;
 
 /// Type of HTTP(s) client.
 pub struct Client {
@@ -64,7 +69,7 @@ impl Client {
     }
 
     /// Send a request.
-    pub fn request(self, request: Request<Body>) -> ApiResponse {
+    pub fn request(self, request: Request) -> ApiResponse {
         ApiResponse(self.inner.request(request))
     }
 }
@@ -107,3 +112,8 @@ impl<T> Future for ApiResult<T> where T: ParseBody {
     }
 }
 
+impl<T> ParseBody for T where for<'de> T: Deserialize<'de> {
+    fn parse_body(body: &[u8]) -> Result<Self, ApiError> {
+        serde_json::from_slice(body).map_err(From::from)
+    }
+}

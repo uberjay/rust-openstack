@@ -83,15 +83,14 @@ mod common;
 #[cfg(feature = "compute")]
 pub mod compute;
 mod identity;
-mod http;
+pub mod http;
 pub mod service;
 mod session;
 mod utils;
 
 pub use common::ApiError;
-pub use common::ApiResult;
 pub use common::ApiVersion;
 pub use common::ApiVersionRequest;
 pub use common::Sort;
-pub use http::ApiResponse;
+pub use http::ApiResult;
 pub use session::Session;

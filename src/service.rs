@@ -24,12 +24,46 @@ use serde::{Deserialize, Serialize};
 use serde_json;
 
 use super::{ApiError, ApiResult, ApiVersion, ApiVersionRequest, Session};
+use super::http;
 use super::utils;
 
 
-/// Type of query parameters.
-#[derive(Clone, Debug)]
-pub struct Query(pub Vec<(String, String)>);
+/// Trait of a service.
+pub trait Service {
+    /// Get basic service information.
+    fn service_info(&self) -> &ServiceInfo;
+
+    /// Build a full endpoint for this service, given a partial URI.
+    fn get_endpoint(&self, parts: &Uri) -> Uri;
+
+    /// Run an authenticated request against this service.
+    fn request(&self, request: http::Request) -> http::ApiResponse;
+}
+
+/// Trait representing a service with API version support.
+pub trait ApiVersioning : Service {
+    /// Set the API version for future use.
+    ///
+    /// Returns a canonical form of the version or None if it's not compatible.
+    fn set_api_version(&mut self, version: ApiVersion) -> Option<ApiVersion>;
+
+    /// Negotiate an API version with the service.
+    ///
+    /// Negotiation is based on version information returned from the root
+    /// endpoint. If no minimum version is returned, the current version is
+    /// assumed to be the only supported version.
+    ///
+    /// The resulting API version may be cached for this instance.
+    fn negotiate_api_version(&mut self, requested: ApiVersionRequest)
+            -> Option<ApiVersion> {
+        let info = self.service_info();
+        info.pick_api_version(requested).and_then(|ver| {
+            info!("Negotiated API version {} for {} API",
+                  ver, self.catalog_type());
+            self.set_api_version(ver)
+        })
+    }
+}
 
 /// Information about API endpoint.
 #[derive(Clone, Debug)]
@@ -42,47 +76,46 @@ pub struct ServiceInfo {
     pub minimum_version: Option<ApiVersion>
 }
 
-/// Trait representing a service type.
-pub trait ServiceType {
-    /// Service type to pass to the catalog.
-    fn catalog_type() -> &'static str;
-
-    /// Get basic service information.
-    fn service_info(endpoint: Uri, session: &Session)
-        -> ApiResult<ServiceInfo>;
-}
-
-/// Trait representing a service with API version support.
-pub trait ApiVersioning {
-    /// Return headers to set for this API version.
-    fn api_version_headers(version: ApiVersion) -> ApiResult<Headers>;
-}
-
-/// A service-specific wrapper around Session.
+/// Base implementation of a service.
+///
+/// This is not designed to be used directly, but rather through a specific
+/// service wrapper.
 #[derive(Debug)]
-pub struct ServiceWrapper<'session, Srv: ServiceType> {
+pub struct BaseService<'session> {
     session: &'session Session,
-    service_type: PhantomData<Srv>,
-    endpoint_interface: Option<String>
+    endpoint_interface: Option<String>,
+    info: ServiceInfo
 }
 
+/// Type of query parameters.
+#[derive(Clone, Debug)]
+pub struct Query(pub Vec<(String, String)>);
 
-impl Query {
-    /// Empty query.
-    pub fn new() -> Query {
-        Query(Vec::new())
+
+impl<'session> BaseService<'session> {
+    /// Create a new base service object.
+    pub fn new(session: &'session Session, service_info: ServiceInfo)
+            -> BaseService<'session> {
+        BaseService {
+            session: session,
+            endpoint_interface: None,
+            info: service_info
+        }
+    }
+}
+
+impl<'session> Service for BaseService<'session> {
+    fn service_info(&self) -> &ServiceInfo {
+        &self.info
     }
 
-    /// Add an item to the query.
-    pub fn push<K, V>(&mut self, param: K, value: V)
-            where K: Into<String>, V: ToString {
-        self.0.push((param.into(), value.to_string()))
+    fn get_endpoint(&self, parts: &Uri) -> Uri {
+        // TODO
+        parts.clone()
     }
 
-    /// Add a strng item to the query.
-    pub fn push_str<K, V>(&mut self, param: K, value: V)
-            where K: Into<String>, V: Into<String> {
-        self.0.push((param.into(), value.into()))
+    fn request(&self, request: http::Request) -> http::ApiResponse {
+        // TODO
     }
 }
 
@@ -219,6 +252,25 @@ impl ServiceInfo {
                 })
             }
         }
+    }
+}
+
+impl Query {
+    /// Empty query.
+    pub fn new() -> Query {
+        Query(Vec::new())
+    }
+
+    /// Add an item to the query.
+    pub fn push<K, V>(&mut self, param: K, value: V)
+            where K: Into<String>, V: ToString {
+        self.0.push((param.into(), value.to_string()))
+    }
+
+    /// Add a strng item to the query.
+    pub fn push_str<K, V>(&mut self, param: K, value: V)
+            where K: Into<String>, V: Into<String> {
+        self.0.push((param.into(), value.into()))
     }
 }
 

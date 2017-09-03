@@ -19,8 +19,7 @@ use std::fmt;
 use std::io;
 use std::str::FromStr;
 
-use hyper::{Error as HttpClientError, StatusCode};
-use hyper::client::Response;
+use hyper::{Error as HttpClientError, Response, StatusCode};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::{Error as DeserError, Visitor};
 use serde_json::Error as JsonError;
@@ -60,9 +59,6 @@ pub enum ApiError {
         maximum: Option<ApiVersion>
     }
 }
-
-/// Result of an API call.
-pub type ApiResult<T> = Result<T, ApiError>;
 
 /// API version (major, minor).
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd, Eq, Ord)]
@@ -162,7 +158,7 @@ impl fmt::Display for ApiVersion {
 }
 
 fn parse_component(component: &str, value: &str, message: &str)
-        -> ApiResult<u16> {
+        -> Result<u16, ApiError> {
     match component.parse() {
         Ok(val) => Ok(val),
         Err(..) => Err(ApiError::InvalidApiVersion {
@@ -175,7 +171,7 @@ fn parse_component(component: &str, value: &str, message: &str)
 impl FromStr for ApiVersion {
     type Err = ApiError;
 
-    fn from_str(s: &str) -> ApiResult<ApiVersion> {
+    fn from_str(s: &str) -> Result<ApiVersion, ApiError> {
         let parts: Vec<&str> = s.split('.').collect();
 
         if parts.len() != 2 {
