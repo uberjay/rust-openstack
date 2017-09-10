@@ -19,16 +19,16 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::str::FromStr;
 
 use chrono::{DateTime, FixedOffset};
-use hyper::Url;
+use hyper::Uri;
 use serde::{Deserialize, Deserializer};
 use serde::de::Error as DeserError;
 use serde_json::Error as JsonError;
 
-use super::super::super::{ApiResult, ApiVersion};
+use super::super::super::{ApiError, ApiVersion};
 use super::super::super::ApiError::InvalidJson;
-use super::super::super::service::ServiceInfo;
 use super::super::super::utils;
 
 
@@ -170,10 +170,8 @@ pub struct Version {
     pub id: String,
     pub links: Vec<Link>,
     pub status: String,
-    #[serde(deserialize_with = "utils::empty_as_none")]
-    pub version: Option<ApiVersion>,
-    #[serde(deserialize_with = "utils::empty_as_none")]
-    pub min_version: Option<ApiVersion>
+    pub version: ApiVersion,
+    pub min_version: ApiVersion
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -188,9 +186,9 @@ pub struct VersionRoot {
 
 
 impl Version {
-    pub fn to_service_info(&self) -> ApiResult<ServiceInfo> {
-        let endpoint = match self.links.iter().find(|x| &x.rel == "self") {
-            Some(link) => Url::parse(&link.href)?,
+    pub fn root(&self) -> Result<Uri, ApiError> {
+        match self.links.iter().find(|x| &x.rel == "self") {
+            Some(link) => FromStr::from_str(&link.href)?,
             None => {
                 error!("Received malformed version response: no self link \
                         in {:?}", self.links);
@@ -198,13 +196,7 @@ impl Version {
                     InvalidJson(JsonError::missing_field("link to self"))
                 );
             }
-        };
-
-        Ok(ServiceInfo {
-            root_url: endpoint,
-            current_version: self.version,
-            minimum_version: self.min_version
-        })
+        }
     }
 }
 

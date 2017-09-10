@@ -19,16 +19,15 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use chrono::{DateTime, FixedOffset};
 
-use super::super::super::{ApiResult, Session, Sort};
+use super::super::super::{ApiResult, Sort};
 use super::super::super::service::Query;
-use super::base::V2ServiceWrapper;
-use super::protocol;
+use super::{ComputeV2, protocol};
 
 
 /// A query to server list.
 #[derive(Clone, Debug)]
-pub struct ServerQuery<'session> {
-    service: V2ServiceWrapper<'session>,
+pub struct ServerQuery<'s> {
+    service: &'s ComputeV2,
     /// Underlying query.
     pub query: Query,
 }
@@ -78,41 +77,41 @@ pub struct ServerQuery<'session> {
 ///          server.name(), server.image().id(), server.flavor().id());
 /// ```
 #[derive(Clone, Debug)]
-pub struct ServerManager<'session> {
-    service: V2ServiceWrapper<'session>
+pub struct ServerManager<'s> {
+    service: &'s ComputeV2
 }
 
 /// Structure representing a summary of a single server.
 #[derive(Clone, Debug)]
-pub struct Server<'session> {
-    service: V2ServiceWrapper<'session>,
+pub struct Server<'s> {
+    service: &'s ComputeV2,
     inner: protocol::Server
 }
 
 /// Structure representing a summary of a single server.
 #[derive(Clone, Debug)]
-pub struct ServerSummary<'session> {
-    service: V2ServiceWrapper<'session>,
+pub struct ServerSummary<'s> {
+    service: &'s ComputeV2,
     inner: protocol::ServerSummary
 }
 
 /// List of servers.
-pub type ServerList<'session> = Vec<ServerSummary<'session>>;
+pub type ServerList<'s> = Vec<ServerSummary<'s>>;
 
 /// A reference to a flavor.
 #[derive(Clone, Copy, Debug)]
-pub struct FlavorRef<'session> {
-    server: &'session Server<'session>
+pub struct FlavorRef<'s> {
+    server: &'s Server<'s>
 }
 
 /// A reference to an image.
 #[derive(Clone, Copy, Debug)]
-pub struct ImageRef<'session> {
-    server: &'session Server<'session>
+pub struct ImageRef<'s> {
+    server: &'s Server<'s>
 }
 
 
-impl<'session> Server<'session> {
+impl<'s> Server<'s> {
     /// Get a reference to IPv4 address.
     pub fn access_ipv4(&self) -> &Option<Ipv4Addr> {
         &self.inner.accessIPv4
@@ -139,7 +138,7 @@ impl<'session> Server<'session> {
     }
 
     /// Get a reference to the flavor.
-    pub fn flavor(&'session self) -> FlavorRef<'session> {
+    pub fn flavor(&'s self) -> FlavorRef<'s> {
         FlavorRef {
             server: self
         }
@@ -151,7 +150,7 @@ impl<'session> Server<'session> {
     }
 
     /// Get a reference to the image.
-    pub fn image(&'session self) -> ImageRef<'session> {
+    pub fn image(&'s self) -> ImageRef<'s> {
         ImageRef {
             server: self
         }
@@ -173,25 +172,25 @@ impl<'session> Server<'session> {
     }
 }
 
-impl<'session> FlavorRef<'session> {
+impl<'s> FlavorRef<'s> {
     /// Get a reference to flavor unique ID.
-    pub fn id(&self) -> &'session String {
+    pub fn id(&self) -> &'s String {
         &self.server.inner.flavor.id
     }
 
     // TODO: pub fn details(&self) -> ApiResult<Flavor>
 }
 
-impl<'session> ImageRef<'session> {
+impl<'s> ImageRef<'s> {
     /// Get a reference to image unique ID.
-    pub fn id(&self) -> &'session String {
+    pub fn id(&self) -> &'s String {
         &self.server.inner.image.id
     }
 
     // TODO: #[cfg(feature = "image")] pub fn details(&self) -> ApiResult<Image>
 }
 
-impl<'session> ServerSummary<'session> {
+impl<'s> ServerSummary<'s> {
     /// Get a reference to server unique ID.
     pub fn id(&self) -> &String {
         &self.inner.id
@@ -203,14 +202,13 @@ impl<'session> ServerSummary<'session> {
     }
 
     /// Get details.
-    pub fn details(&self) -> ApiResult<Server<'session>> {
+    pub fn details(&self) -> ApiResult<Server<'s>> {
         ServerManager::get_server(self.service.clone(), &self.inner.id)
     }
 }
 
-impl<'session> ServerQuery<'session> {
-    fn new(service: V2ServiceWrapper<'session>)
-            -> ServerQuery<'session> {
+impl<'s> ServerQuery<'s> {
+    fn new(service: &'s ComputeV2) -> ServerQuery<'s> {
         ServerQuery {
             service: service,
             query: Query::new(),
@@ -317,7 +315,7 @@ impl<'session> ServerQuery<'session> {
 
     /// Execute this request and return its result.
     #[allow(unused_results)]
-    pub fn fetch(self) -> ApiResult<ServerList<'session>> {
+    pub fn fetch(self) -> ApiResult<ServerList<'s>> {
         let service = self.service;
         let query = self.query;
 
@@ -333,11 +331,11 @@ impl<'session> ServerQuery<'session> {
     }
 }
 
-impl<'session> ServerManager<'session> {
+impl<'s> ServerManager<'s> {
     /// Constructor for server manager.
-    pub fn new(session: &'session Session) -> ServerManager<'session> {
+    pub fn new(service: &'s ComputeV2) -> ServerManager<'s> {
         ServerManager {
-            service: V2ServiceWrapper::new(session)
+            service: service
         }
     }
 
@@ -346,22 +344,21 @@ impl<'session> ServerManager<'session> {
     /// Note that this method does not return results immediately, but rather
     /// a [ServerQuery](struct.ServerQuery.html) object that
     /// you can futher specify with e.g. filtering or sorting.
-    pub fn query(&self) -> ServerQuery<'session> {
-        ServerQuery::new(self.service.clone())
+    pub fn query(&self) -> ServerQuery<'s> {
+        ServerQuery::new(self.service)
     }
 
     /// List all servers.
-    pub fn list(&self) -> ApiResult<ServerList<'session>> {
+    pub fn list(&self) -> ApiResult<ServerList<'s>> {
         self.query().fetch()
     }
 
     /// Get a server.
-    pub fn get<Id: AsRef<str>>(&self, id: Id) -> ApiResult<Server<'session>> {
+    pub fn get<Id: AsRef<str>>(&self, id: Id) -> ApiResult<Server<'s>> {
         ServerManager::get_server(self.service.clone(), id.as_ref())
     }
 
-    fn get_server(service: V2ServiceWrapper<'session>, id: &str)
-            -> ApiResult<Server<'session>> {
+    fn get_server(service: &'s ComputeV2, id: &str) -> ApiResult<Server<'s>> {
         trace!("Get compute server {}", id);
         let inner: protocol::ServerRoot = service.get_json(&["servers", id],
                                                            Query::new())?;
@@ -371,11 +368,6 @@ impl<'session> ServerManager<'session> {
             inner: inner.server
         })
     }
-}
-
-/// Create a server manager.
-pub fn servers<'session>(session: &'session Session) -> ServerManager<'session> {
-    ServerManager::new(session)
 }
 
 

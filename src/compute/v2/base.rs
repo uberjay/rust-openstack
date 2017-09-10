@@ -15,26 +15,30 @@
 //! Foundation bits exposing the Compute API.
 
 use std::io::Read;
+use std::str::FromStr;
 
-use hyper::{Get, NotFound, Url};
+use futures::{future, Future};
+use hyper::{Get, NotFound, Uri};
 use hyper::client::Response;
 use hyper::header::Headers;
 use serde_json;
 
-use super::super::super::{ApiResult, ApiVersion, Session};
+use super::super::super::{ApiError, ApiResult, ApiVersion};
 use super::super::super::ApiError::{HttpError, EndpointNotFound};
-use super::super::super::service::{ApiVersioning, ServiceInfo, ServiceType,
-                                   ServiceWrapper};
-use super::super::super::utils;
+use super::super::super::auth::AuthMethod;
+use super::super::super::service::{ApiVersioning, Service};
+use super::super::super::http;
 use super::protocol::{VersionRoot, VersionsRoot};
 
 
-/// Service wrapper for Compute API V2.
-pub type V2ServiceWrapper<'session> = ServiceWrapper<'session, V2>;
-
-/// Service type of Compute API V2.
-#[derive(Copy, Clone, Debug)]
-pub struct V2;
+#[derive(Clone, Debug)]
+pub struct ComputeV2 {
+    auth: Box<AuthMethod>,
+    root: Uri,
+    min_version: ApiVersion,
+    max_version: ApiVersion,
+    current_version: Option<ApiVersion>
+}
 
 
 header! {
@@ -44,18 +48,46 @@ header! {
 const SERVICE_TYPE: &'static str = "compute";
 const VERSION_ID: &'static str = "v2.1";
 
-fn extract_info(mut resp: Response, secure: bool) -> ApiResult<ServiceInfo> {
+impl ComputeV2 {
+    /// Create a new Compute service client.
+    pub fn new<A: AuthMethod>(auth: A) -> ApiResult<ComputeV2> {
+        let maybe_ep = auth.get_endpoint(SERVICE_TYPE, None);
+        maybe_ep.and_then(|ep| {
+             let secure = ep.scheme() == Some("https");
+             let res1 = auth.request(http::Request::new(Get, ep.clone()));
+             res1.or_else(|err| {
+                 match err {
+                    Err(HttpError(NotFound, ..)) => {
+                        // ...
+                    },
+                    err => future::err(err)
+                 }
+             }).map(|res| {
+                let (min, max) = extract_info(res, secure)?;
+                ComputeV2 {
+                    auth: Box::new(auth),
+                    root: ep,
+                    min_version: min,
+                    max_version: max
+                }
+             })
+        })
+    }
+}
+
+fn extract_info(mut resp: Response, secure: bool)
+        -> Result<(ApiVersion, ApiVersion), ApiError> {
     let mut body = String::new();
     let _ = resp.read_to_string(&mut body)?;
 
     // First, assume it's a versioned URL.
     let mut info = match serde_json::from_str::<VersionRoot>(&body) {
-        Ok(ver) => ver.version.to_service_info(),
+        Ok(ver) => Ok((ver.min_version, ver.version)),
         Err(..) => {
             // Second, assume it's a root URL.
             let vers: VersionsRoot = serde_json::from_str(&body)?;
             match vers.versions.into_iter().find(|x| &x.id == VERSION_ID) {
-                Some(ver) => ver.to_service_info(),
+                Some(ver) => Ok((ver.min_version, ver.version)),
                 None => Err(EndpointNotFound(String::from(SERVICE_TYPE)))
             }
         }
@@ -69,45 +101,34 @@ fn extract_info(mut resp: Response, secure: bool) -> ApiResult<ServiceInfo> {
     Ok(info)
 }
 
-impl ServiceType for V2 {
-    fn catalog_type() -> &'static str {
-        SERVICE_TYPE
+impl Service for ComputeV2 {
+    fn get_endpoint(&self, parts: &Uri) -> Uri {
+        let s = format!("{}/{}", self.root, parts);
+        FromStr::from_str(&s).unwrap()
     }
 
-    fn service_info(endpoint: Url, session: &Session)
-            -> ApiResult<ServiceInfo> {
-        debug!("Fetching compute service info from {}", endpoint);
-        let secure = endpoint.scheme() == "https";
-        let result = session.request(Get, endpoint.clone(), Headers::new())?
-            .send();
-        match result {
-            Ok(resp) => {
-                let result = extract_info(resp, secure)?;
-                info!("Received {:?} from {}", result, endpoint);
-                Ok(result)
-            },
-            Err(HttpError(NotFound, ..)) => {
-                if utils::url::is_root(&endpoint) {
-                    Err(EndpointNotFound(String::from(SERVICE_TYPE)))
-                } else {
-                    debug!("Got HTTP 404 from {}, trying parent endpoint",
-                           endpoint);
-                    V2::service_info(
-                        utils::url::pop(endpoint, true),
-                        session)
-                }
-            },
-            Err(other) => Err(other)
+    fn request(&self, request: http::Request) -> http::ApiResponse {
+        if ! request.uri().is_absolute() {
+            let new_uri = self.get_endpoint(&request.uri());
+            request.set_uri(new_uri);
         }
+
+        self.auth.request(request)
     }
 }
 
-impl ApiVersioning for V2 {
-    fn api_version_headers(version: ApiVersion) -> ApiResult<Headers> {
-        let mut hdrs = Headers::new();
-        // TODO: new-style header support
-        hdrs.set(XOpenStackNovaApiVersion(version));
-        Ok(hdrs)
+impl ApiVersioning for ComputeV2 {
+    fn supported_api_version_range(&self) -> (ApiVersion, ApiVersion) {
+        (self.min_version, self.max_version)
+    }
+
+    fn set_api_version(&mut self, version: ApiVersion) -> Option<ApiVersion> {
+        if version >= self.min_version && version <= self.max_version {
+            self.current_version = Some(version);
+            Some(version)
+        } else {
+            None
+        }
     }
 }
 
