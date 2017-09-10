@@ -69,6 +69,7 @@ extern crate hyper;
 extern crate hyper_rustls;
 #[macro_use]
 extern crate log;
+extern crate mime;
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
@@ -85,7 +86,6 @@ pub mod compute;
 mod identity;
 pub mod http;
 pub mod service;
-mod session;
 mod utils;
 
 pub use common::ApiError;
@@ -93,4 +93,3 @@ pub use common::ApiVersion;
 pub use common::ApiVersionRequest;
 pub use common::Sort;
 pub use http::ApiResult;
-pub use session::Session;

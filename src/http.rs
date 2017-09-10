@@ -90,7 +90,7 @@ impl Future for ApiResponse {
     }
 }
 
-impl<T> ApiResult<T> {
+impl<T> ApiResult<T> where T: ParseBody {
     /// New result from a response.
     pub fn new(response: ApiResponse) -> ApiResult<T> {
         ApiResult {

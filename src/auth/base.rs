@@ -19,6 +19,7 @@ use std::fmt::Debug;
 use hyper::{Body, Request, Response, Uri};
 
 use super::super::ApiResult;
+use super::super::http::ApiResponse;
 
 
 /// Trait for an authentication method.
@@ -44,7 +45,7 @@ pub trait AuthMethod: BoxedClone + Debug {
                     region: Option<String>) -> ApiResult<Uri>;
 
     /// Run an authenticated request.
-    fn request(&self, request: Request<Body>) -> ApiResult<Response>;
+    fn request(&self, request: Request<Body>) -> ApiResponse;
 }
 
 
