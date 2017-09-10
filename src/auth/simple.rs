@@ -14,10 +14,10 @@
 
 //! Simple authentication methods.
 
-use hyper::{Body, Client, Method, Request, Uri};
+use hyper::{Body, Client, Method, Request, Response, Uri};
 
 use super::super::ApiResult;
-use super::super::utils;
+use super::super::http;
 use super::AuthMethod;
 
 /// Authentication method that provides no authentication.
@@ -27,7 +27,7 @@ use super::AuthMethod;
 #[derive(Clone, Debug)]
 pub struct NoAuth {
     endpoint: Uri,
-    client: utils::HttpsClient
+    client: http::Client
 }
 
 impl NoAuth {
@@ -38,7 +38,7 @@ impl NoAuth {
     pub fn new(endpoint: Uri) -> NoAuth {
         NoAuth {
             endpoint: endpoint,
-            client: utils::http_client()
+            client: http::Client::new(),
         }
     }
 }
@@ -51,8 +51,7 @@ impl AuthMethod for NoAuth {
 
     /// Get a predefined endpoint for all service types
     fn get_endpoint(&self, _service_type: String,
-                    _endpoint_interface: Option<String>,
-                    _region: Option<String>) -> ApiResult<Uri> {
+                    _endpoint_interface: Option<String>) -> ApiResult<Uri> {
         Ok(self.endpoint.clone())
     }
 }

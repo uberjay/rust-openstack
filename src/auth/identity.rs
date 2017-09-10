@@ -19,14 +19,16 @@ use std::env;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
+use std::str::FromStr;
 
-use hyper::{Body, Get, Method, Request, Response, StatusCode, Uri};
+use hyper::{Body, Get, Method, Request, Response, Post, StatusCode, Uri};
 use hyper::Error as HttpClientError;
 use hyper::header::{ContentType, Headers};
+use mime;
 
 use super::super::{ApiError, ApiResult};
-use super::super::identity::{catalog, protocol};
-use super::super::utils;
+use super::super::identity::protocol;
+use super::super::http;
 use super::AuthMethod;
 
 use ApiError::InvalidInput;
@@ -60,7 +62,8 @@ impl Hash for Token {
 /// Authentication method factory using Identity API V3.
 #[derive(Clone, Debug)]
 pub struct Identity {
-    auth_url: Uri,
+    auth_uri: Uri,
+    region: Option<String>,
     password_identity: Option<protocol::PasswordIdentity>,
     project_scope: Option<protocol::ProjectScope>
 }
@@ -70,23 +73,34 @@ pub struct Identity {
 /// Has to be created via [Identity object](struct.Identity.html) methods.
 #[derive(Clone, Debug)]
 pub struct PasswordAuth {
-    auth_url: Uri,
-    body: protocol::ProjectScopedAuthRoot,
+    auth_uri: Uri,
+    region: Option<String>,
+    body: String,
     token_endpoint: String,
-    cached_token: utils::ValueCache<Token>,
-    client: utils::HttpsClient
+    client: http::Client
 }
 
 impl Identity {
     /// Get a reference to the auth URL.
-    pub fn get_auth_url(&self) -> &Uri {
-        &self.auth_url
+    pub fn get_auth_uri(&self) -> &Uri {
+        &self.auth_uri
     }
 
     /// Create a password authentication against the given Identity service.
     pub fn new(auth_uri: Uri) -> Identity {
         Ok(Identity {
-            auth_url: auth_uri,
+            auth_uri: auth_uri,
+            region: None,
+            password_identity: None,
+            project_scope: None,
+        })
+    }
+
+    /// Create a password authentication against the given Identity service.
+    pub fn new_with_region(auth_uri: Uri, region: String) -> Identity {
+        Ok(Identity {
+            auth_uri: auth_uri,
+            region: Some(region),
             password_identity: None,
             project_scope: None,
         })
@@ -134,13 +148,14 @@ impl Identity {
                 )
         };
 
-        Ok(PasswordAuth::new(self.auth_url, password_identity, project_scope))
+        Ok(PasswordAuth::new(self.auth_uri, self.region,
+                             password_identity, project_scope))
     }
 
     /// Create an authentication method from environment variables.
     pub fn from_env() -> ApiResult<PasswordAuth> {
-        let auth_url = _get_env("OS_AUTH_URL")?;
-        let id = match Identity::new(&auth_url) {
+        let auth_uri = _get_env("OS_AUTH_URL")?;
+        let id = match Identity::new(&auth_uri) {
             Ok(x) => x,
             Err(e) =>
                 return Err(ApiError::ProtocolError(HttpClientError::Uri(e)))
@@ -168,23 +183,24 @@ fn _get_env(name: &str) -> ApiResult<String> {
 
 impl PasswordAuth {
     /// Get a reference to the auth URL.
-    pub fn get_auth_url(&self) -> &Uri {
-        &self.auth_url
+    pub fn get_auth_uri(&self) -> &Uri {
+        &self.auth_uri
     }
 
-    fn new(auth_url: Uri, password_identity: protocol::PasswordIdentity,
+    fn new(auth_uri: Uri, region: Option<String>,
+           password_identity: protocol::PasswordIdentity,
            project_scope: protocol::ProjectScope) -> PasswordAuth {
         let body = protocol::ProjectScopedAuthRoot::new(password_identity,
                                                         project_scope);
-        // TODO: allow /v3 postfix built into auth_url?
+        // TODO: allow /v3 postfix built into auth_uri?
         let token_endpoint = format!("{}/v3/auth/tokens",
-                                     auth_url.to_string());
+                                     auth_uri.to_string());
         PasswordAuth {
-            auth_url: auth_url,
-            body: body,
+            auth_uri: auth_uri,
+            region: region,
+            body: body.to_string().unwrap(),
             token_endpoint: token_endpoint,
-            cached_token: utils::ValueCache::new(None),
-            client: utils::http_client()
+            client: http::Client::new()
         }
     }
 
@@ -219,43 +235,56 @@ impl PasswordAuth {
             }
         };
 
-        info!("Received a token for user {} from {}",
-               self.body.auth.identity.password.user.name,
-               self.token_endpoint);
+        info!("Received a token from {}", self.token_endpoint);
 
         // TODO: detect expiration time
         // TODO: do something useful about the body
         Ok(Token(token_value))
     }
 
-    fn refresh_token(&self) -> ApiResult<()> {
-        // TODO: refresh on expiration
-        self.cached_token.ensure_value(|| {
-            debug!("Requesting a token for user {} from {}",
-                   self.body.auth.identity.password.user.name,
-                   self.token_endpoint);
-            let body = self.body.to_string().unwrap();
-            let resp = self.client.post(&self.token_endpoint).body(&body)
-                .header(ContentType::json()).send()?;
-            self.token_from_response(resp)
-        })
-    }
-
     fn get_token(&self) -> ApiResult<String> {
-        self.refresh_token()?;
-        Ok(self.cached_token.get().unwrap().0)
+        let req = http::Request::new(Post, self.token_endpoint.clone());
+        req.headers_mut().set(ContentType(mime::APPLICATION_JSON));
+        req.set_body(self.body.clone());
+        self.client.request(req).and_then(self.token_from_response)
     }
 
     fn get_catalog(&self) -> ApiResult<Vec<protocol::CatalogRecord>> {
         // TODO: catalog caching
-        let catalog_url = catalog::get_url(self.auth_url.clone());
-        trace!("Requesting a service catalog from {}", catalog_url);
-        let req = Request::new(Get, catalog_url);
+        let catalog_uri_s = format!("{}/v3/auth/catalog", self.auth_uri);
+        let catalog_uri = FromStr::from_str(catalog_uri_s).unwrap();
+        trace!("Requesting a service catalog from {}", catalog_uri);
+        let req = Request::new(Get, catalog_uri);
         let resp = self.request(req);
         let body: protocol::CatalogRoot = resp.fetch_json()?;
         trace!("Received catalog: {:?}", body.catalog);
         Ok(body.catalog)
     }
+}
+
+
+/// Find an endpoint in the service catalog.
+pub fn find_endpoint(catalog: Vec<protocol::CatalogRecord>,
+                     service_type: &String,
+                     endpoint_interface: &String,
+                     region: &Option<String>)
+        -> ApiResult<protocol::Endpoint> {
+    let svc = match catalog.into_iter().find(
+            |x| x.service_type == service_type) {
+        Some(s) => s,
+        None => return Err(ApiError::EndpointNotFound(service_type))
+    };
+
+    let maybe_endp: Option<protocol::Endpoint>;
+    if let Some(ref rgn) = region {
+        maybe_endp = svc.endpoints.into_iter().find(
+            |x| x.interface == endpoint_interface && x.region == rgn);
+    } else {
+        maybe_endp = svc.endpoints.into_iter().find(
+            |x| x.interface == endpoint_interface);
+    }
+
+    maybe_endp.ok_or(ApiError::EndpointNotFound(service_type))
 }
 
 impl AuthMethod for PasswordAuth {
@@ -268,15 +297,15 @@ impl AuthMethod for PasswordAuth {
 
     /// Get a URL for the requested service.
     fn get_endpoint(&self, service_type: String,
-                    endpoint_interface: Option<String>,
-                    region: Option<String>) -> ApiResult<Uri> {
+                    endpoint_interface: Option<String>) -> ApiResult<Uri> {
         let real_interface = endpoint_interface.unwrap_or(
             self.default_endpoint_interface());
         debug!("Requesting a catalog endpoint for service '{}', interface \
-               '{}' from region {:?}", service_type, real_interface, region);
+               '{}' from region {:?}",
+               service_type, real_interface, self.region);
         let cat = self.get_catalog()?;
-        let endp = catalog::find_endpoint(&cat, service_type,
-                                          real_interface, region)?;
+        let endp = find_endpoint(cat, &service_type, &real_interface,
+                                 &self.region)?;
         info!("Received {:?}", endp);
         endp.url.into_url().map_err(From::from)
     }
@@ -357,7 +386,7 @@ pub mod test {
     #[test]
     fn test_identity_new() {
         let id = Identity::new("http://127.0.0.1:8080/").unwrap();
-        let e = id.auth_url;
+        let e = id.auth_uri;
         assert_eq!(e.scheme(), "http");
         assert_eq!(e.host_str().unwrap(), "127.0.0.1");
         assert_eq!(e.port().unwrap(), 8080u16);
@@ -375,8 +404,8 @@ pub mod test {
             .with_user("user", "pa$$w0rd", "example.com")
             .with_project_scope("cool project", "example.com")
             .create().unwrap();
-        assert_eq!(&id.auth_url.to_string(), "http://127.0.0.1:8080/identity");
-        assert_eq!(id.get_auth_url().to_string(),
+        assert_eq!(&id.auth_uri.to_string(), "http://127.0.0.1:8080/identity");
+        assert_eq!(id.get_auth_uri().to_string(),
                    "http://127.0.0.1:8080/identity");
         assert_eq!(&id.body.auth.identity.password.user.name, "user");
         assert_eq!(&id.body.auth.identity.password.user.password, "pa$$w0rd");
@@ -485,5 +514,108 @@ pub mod test {
                 assert_eq!(endp, "identity"),
             other => panic!("Unexpected {}", other)
         };
+    }
+
+    fn demo_service1() -> CatalogRecord {
+        CatalogRecord {
+            service_type: String::from("identity"),
+            endpoints: vec![
+                Endpoint {
+                    interface: String::from("public"),
+                    region: String::from("RegionOne"),
+                    url: String::from("https://host.one/identity")
+                },
+                Endpoint {
+                    interface: String::from("internal"),
+                    region: String::from("RegionOne"),
+                    url: String::from("http://192.168.22.1/identity")
+                },
+                Endpoint {
+                    interface: String::from("public"),
+                    region: String::from("RegionTwo"),
+                    url: String::from("https://host.two:5000")
+                }
+            ]
+        }
+    }
+
+    fn demo_service2() -> CatalogRecord {
+        CatalogRecord {
+            service_type: String::from("baremetal"),
+            endpoints: vec![
+                Endpoint {
+                    interface: String::from("public"),
+                    region: String::from("RegionOne"),
+                    url: String::from("https://host.one/baremetal")
+                },
+                Endpoint {
+                    interface: String::from("public"),
+                    region: String::from("RegionTwo"),
+                    url: String::from("https://host.two:6385")
+                }
+            ]
+        }
+    }
+
+    pub fn demo_catalog() -> Vec<CatalogRecord> {
+        vec![demo_service1(), demo_service2()]
+    }
+
+    fn find_endpoint<'a>(cat: &'a Vec<CatalogRecord>,
+                         service_type: &str, interface_type: &str,
+                         region: Option<&str>) -> ApiResult<&'a Endpoint> {
+        super::find_endpoint(cat, String::from(service_type),
+                             String::from(interface_type),
+                             region.map(String::from))
+    }
+
+    #[test]
+    fn test_find_endpoint() {
+        let cat = demo_catalog();
+
+        let e1 = find_endpoint(&cat, "identity", "public", None).unwrap();
+        assert_eq!(&e1.url, "https://host.one/identity");
+
+        let e2 = find_endpoint(&cat, "identity", "internal", None).unwrap();
+        assert_eq!(&e2.url, "http://192.168.22.1/identity");
+
+        let e3 = find_endpoint(&cat, "baremetal", "public", None).unwrap();
+        assert_eq!(&e3.url, "https://host.one/baremetal");
+    }
+
+    #[test]
+    fn test_find_endpoint_with_region() {
+        let cat = demo_catalog();
+
+        let e1 = find_endpoint(&cat, "identity", "public",
+                               Some("RegionTwo")).unwrap();
+        assert_eq!(&e1.url, "https://host.two:5000");
+
+        let e2 = find_endpoint(&cat, "identity", "internal",
+                               Some("RegionOne")).unwrap();
+        assert_eq!(&e2.url, "http://192.168.22.1/identity");
+
+        let e3 = find_endpoint(&cat, "baremetal", "public",
+                               Some("RegionTwo")).unwrap();
+        assert_eq!(&e3.url, "https://host.two:6385");
+    }
+
+    fn assert_not_found(result: ApiResult<&Endpoint>) {
+        match result.err().unwrap() {
+            ApiError::EndpointNotFound(..) => (),
+            other => panic!("Unexpected error {}", other)
+        }
+    }
+
+    #[test]
+    fn test_find_endpoint_not_found() {
+        let cat = demo_catalog();
+
+        assert_not_found(find_endpoint(&cat, "foobar", "public", None));
+        assert_not_found(find_endpoint(&cat, "identity", "public",
+                                       Some("RegionFoo")));
+        assert_not_found(find_endpoint(&cat, "baremetal", "internal", None));
+        assert_not_found(find_endpoint(&cat, "identity", "internal",
+                                       Some("RegionTwo")));
     }
 }

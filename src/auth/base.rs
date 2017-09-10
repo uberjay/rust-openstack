@@ -19,7 +19,7 @@ use std::fmt::Debug;
 use hyper::{Body, Request, Response, Uri};
 
 use super::super::ApiResult;
-use super::super::http::ApiResponse;
+use super::super::http;
 
 
 /// Trait for an authentication method.
@@ -31,21 +31,12 @@ use super::super::http::ApiResponse;
 ///
 /// An authentication method should cache the token as long as it's valid.
 pub trait AuthMethod: BoxedClone + Debug {
-    /// Default endpoint interface that is used when none is provided.
-    fn default_endpoint_interface(&self) -> String {
-        String::from("public")
-    }
-
-    /// Default region to use with this authentication (if any).
-    fn default_region(&self) -> Option<String> { None }
-
     /// Get a URL for the requested service.
     fn get_endpoint(&self, service_type: String,
-                    endpoint_interface: Option<String>,
-                    region: Option<String>) -> ApiResult<Uri>;
+                    endpoint_interface: Option<String>) -> ApiResult<Uri>;
 
     /// Run an authenticated request.
-    fn request(&self, request: Request<Body>) -> ApiResponse;
+    fn request(&self, request: http::Request) -> http::ApiResponse;
 }
 
 

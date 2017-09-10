@@ -14,5 +14,4 @@
 
 //! Identity API support.
 
-pub mod catalog;
 pub mod protocol;
