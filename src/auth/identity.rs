@@ -21,10 +21,12 @@ use std::hash::{Hash, Hasher};
 use std::io::Read;
 use std::str::FromStr;
 
+use futures::Future;
 use hyper::{Body, Get, Method, Request, Response, Post, StatusCode, Uri};
 use hyper::Error as HttpClientError;
 use hyper::header::{ContentType, Headers};
 use mime;
+use tokio_core::reactor::Handle;
 
 use super::super::{ApiError, ApiResult};
 use super::super::identity::protocol;
@@ -62,6 +64,7 @@ impl Hash for Token {
 /// Authentication method factory using Identity API V3.
 #[derive(Clone, Debug)]
 pub struct Identity {
+    client: http::Client,
     auth_uri: Uri,
     region: Option<String>,
     password_identity: Option<protocol::PasswordIdentity>,
@@ -73,11 +76,12 @@ pub struct Identity {
 /// Has to be created via [Identity object](struct.Identity.html) methods.
 #[derive(Clone, Debug)]
 pub struct PasswordAuth {
+    client: http::Client,
     auth_uri: Uri,
     region: Option<String>,
     body: String,
-    token_endpoint: String,
-    client: http::Client
+    token_endpoint: Uri,
+    user: String
 }
 
 impl Identity {
@@ -87,23 +91,26 @@ impl Identity {
     }
 
     /// Create a password authentication against the given Identity service.
-    pub fn new(auth_uri: Uri) -> Identity {
-        Ok(Identity {
+    pub fn new(io_handle: &Handle, auth_uri: Uri) -> Identity {
+        Identity {
+            client: http::Client::new(io_handle),
             auth_uri: auth_uri,
             region: None,
             password_identity: None,
             project_scope: None,
-        })
+        }
     }
 
     /// Create a password authentication against the given Identity service.
-    pub fn new_with_region(auth_uri: Uri, region: String) -> Identity {
-        Ok(Identity {
+    pub fn new_with_region(io_handle: &Handle, auth_uri: Uri,
+                           region: String) -> Identity {
+        Identity {
+            client: http::Client::new(io_handle),
             auth_uri: auth_uri,
             region: Some(region),
             password_identity: None,
             project_scope: None,
-        })
+        }
     }
 
     /// Add authentication based on user name and password.
@@ -129,7 +136,7 @@ impl Identity {
     }
 
     /// Create an authentication method based on provided information.
-    pub fn create(self) -> ApiResult<PasswordAuth> {
+    pub fn create(self) -> Result<PasswordAuth, ApiError> {
         /// TODO: support more authentication methods (at least a token)
         let password_identity = match self.password_identity {
             Some(p) => p,
@@ -148,15 +155,16 @@ impl Identity {
                 )
         };
 
-        Ok(PasswordAuth::new(self.auth_uri, self.region,
+        Ok(PasswordAuth::new(self.client, self.auth_uri, self.region,
                              password_identity, project_scope))
     }
 
     /// Create an authentication method from environment variables.
-    pub fn from_env() -> ApiResult<PasswordAuth> {
+    pub fn from_env(io_handle: &Handle) -> Result<PasswordAuth, ApiError> {
+        let client = http::Client::new(io_handle);
         let auth_uri = _get_env("OS_AUTH_URL")?;
-        let id = match Identity::new(&auth_uri) {
-            Ok(x) => x,
+        let id = match FromStr::from_str(&auth_uri) {
+            Ok(uri) => Identity::new(io_handle, uri),
             Err(e) =>
                 return Err(ApiError::ProtocolError(HttpClientError::Uri(e)))
         };
@@ -177,7 +185,7 @@ impl Identity {
 }
 
 #[inline]
-fn _get_env(name: &str) -> ApiResult<String> {
+fn _get_env(name: &str) -> Result<String, ApiError> {
     env::var(name).or(Err(InvalidInput(String::from(MISSING_ENV_VARS))))
 }
 
@@ -187,96 +195,88 @@ impl PasswordAuth {
         &self.auth_uri
     }
 
-    fn new(auth_uri: Uri, region: Option<String>,
+    fn new(client: http::Client, auth_uri: Uri, region: Option<String>,
            password_identity: protocol::PasswordIdentity,
            project_scope: protocol::ProjectScope) -> PasswordAuth {
+        let user = password_identity.password.user.name.clone();
         let body = protocol::ProjectScopedAuthRoot::new(password_identity,
                                                         project_scope);
         // TODO: allow /v3 postfix built into auth_uri?
-        let token_endpoint = format!("{}/v3/auth/tokens",
-                                     auth_uri.to_string());
+        let token_endpoint = FromStr::from_str(
+            &format!("{}/v3/auth/tokens", auth_uri)).unwrap();
         PasswordAuth {
+            client: client,
             auth_uri: auth_uri,
             region: region,
             body: body.to_string().unwrap(),
             token_endpoint: token_endpoint,
-            client: http::Client::new()
+            user: user
         }
-    }
-
-    fn token_from_response(&self, mut resp: Response)
-            -> ApiResult<Token> {
-        let mut resp_body = String::new();
-        let _ignored = resp.read_to_string(&mut resp_body)?;
-
-        let token_value = match resp.status {
-            StatusCode::Ok | StatusCode::Created => {
-                let header: Option<&protocol::SubjectTokenHeader> =
-                    resp.headers.get();
-                match header {
-                    Some(ref value) => value.0.clone(),
-                    None => {
-                        error!("No X-Subject-Token header received from {}",
-                               self.token_endpoint);
-                        return Err(
-                            ApiError::ProtocolError(HttpClientError::Header))
-                    }
-                }
-            },
-            StatusCode::Unauthorized => {
-                error!("Invalid credentials for user {}",
-                       self.body.auth.identity.password.user.name);
-                return Err(ApiError::HttpError(resp.status, resp));
-            },
-            other => {
-                error!("Unexpected HTTP error {} when getting a token for {}",
-                       other, self.body.auth.identity.password.user.name);
-                return Err(ApiError::HttpError(resp.status, resp));
-            }
-        };
-
-        info!("Received a token from {}", self.token_endpoint);
-
-        // TODO: detect expiration time
-        // TODO: do something useful about the body
-        Ok(Token(token_value))
     }
 
     fn get_token(&self) -> ApiResult<String> {
         let req = http::Request::new(Post, self.token_endpoint.clone());
         req.headers_mut().set(ContentType(mime::APPLICATION_JSON));
         req.set_body(self.body.clone());
-        self.client.request(req).and_then(self.token_from_response)
+        ApiResult::from_future(
+            self.client.request(req).and_then(|resp| {
+                token_from_response(resp)
+            })
+        )
     }
 
-    fn get_catalog(&self) -> ApiResult<Vec<protocol::CatalogRecord>> {
+    fn get_catalog(&self) -> ApiResult<protocol::CatalogRoot> {
         // TODO: catalog caching
         let catalog_uri_s = format!("{}/v3/auth/catalog", self.auth_uri);
-        let catalog_uri = FromStr::from_str(catalog_uri_s).unwrap();
+        let catalog_uri = FromStr::from_str(&catalog_uri_s).unwrap();
         trace!("Requesting a service catalog from {}", catalog_uri);
         let req = Request::new(Get, catalog_uri);
-        let resp = self.request(req);
-        let body: protocol::CatalogRoot = resp.fetch_json()?;
-        trace!("Received catalog: {:?}", body.catalog);
-        Ok(body.catalog)
+        ApiResult::new(self.request(req))
     }
+}
+
+fn token_from_response(mut resp: Response) -> Result<String, ApiError> {
+    let token_value = match resp.status() {
+        StatusCode::Ok | StatusCode::Created => {
+            let header: Option<&protocol::SubjectTokenHeader> =
+                resp.headers().get();
+            match header {
+                Some(ref value) => value.0.clone(),
+                None => {
+                    error!("No X-Subject-Token header received");
+                    return Err(
+                        ApiError::ProtocolError(HttpClientError::Header))
+                }
+            }
+        },
+        StatusCode::Unauthorized => {
+            return Err(ApiError::HttpError(resp.status(), resp));
+        },
+        other => {
+            return Err(ApiError::HttpError(resp.status(), resp));
+        }
+    };
+
+    // TODO: detect expiration time
+    // TODO: do something useful about the body
+    Ok(token_value)
 }
 
 
 /// Find an endpoint in the service catalog.
 pub fn find_endpoint(catalog: Vec<protocol::CatalogRecord>,
-                     service_type: &String,
-                     endpoint_interface: &String,
-                     region: &Option<String>)
-        -> ApiResult<protocol::Endpoint> {
+                     service_type: String,
+                     endpoint_interface: String,
+                     region: Option<String>)
+        -> Result<protocol::Endpoint, ApiError> {
     let svc = match catalog.into_iter().find(
             |x| x.service_type == service_type) {
         Some(s) => s,
-        None => return Err(ApiError::EndpointNotFound(service_type))
+        None => return Err(ApiError::EndpointNotFound(service_type.clone()))
     };
 
     let maybe_endp: Option<protocol::Endpoint>;
-    if let Some(ref rgn) = region {
+    if let Some(rgn) = region {
         maybe_endp = svc.endpoints.into_iter().find(
             |x| x.interface == endpoint_interface && x.region == rgn);
     } else {
@@ -284,30 +284,36 @@ pub fn find_endpoint(catalog: Vec<protocol::CatalogRecord>,
             |x| x.interface == endpoint_interface);
     }
 
-    maybe_endp.ok_or(ApiError::EndpointNotFound(service_type))
+    maybe_endp.ok_or(ApiError::EndpointNotFound(service_type.clone()))
 }
 
 impl AuthMethod for PasswordAuth {
     /// Create an authenticated request.
-    fn request(&self, mut request: Request<Body>) -> ApiResult<Response> {
-        let token = self.get_token()?;
-        request.headers_mut().set(protocol::AuthTokenHeader(token));
-        Ok(request)
+    fn request(&self, mut request: Request<Body>) -> http::ApiResponse {
+        let maybe_token = self.get_token();
+        // FIXME: is it possible to do it without cloning?
+        let client = self.client.clone();
+        ApiResult::with_response(maybe_token.and_then(|token| {
+            request.headers_mut().set(protocol::AuthTokenHeader(token));
+            client.request(request)
+        }))
     }
 
     /// Get a URL for the requested service.
     fn get_endpoint(&self, service_type: String,
                     endpoint_interface: Option<String>) -> ApiResult<Uri> {
         let real_interface = endpoint_interface.unwrap_or(
-            self.default_endpoint_interface());
+            String::from("public"));
+        let region = self.region.clone();
         debug!("Requesting a catalog endpoint for service '{}', interface \
                '{}' from region {:?}",
                service_type, real_interface, self.region);
-        let cat = self.get_catalog()?;
-        let endp = find_endpoint(cat, &service_type, &real_interface,
-                                 &self.region)?;
-        info!("Received {:?}", endp);
-        endp.url.into_url().map_err(From::from)
+        ApiResult::from_future(self.get_catalog().and_then(|cat| {
+            let endp = find_endpoint(cat.catalog,
+                                     service_type, real_interface, region)?;
+            info!("Received {:?}", endp);
+            FromStr::from_str(&endp.url).map_err(From::from)
+        }))
     }
 }
 

@@ -24,7 +24,7 @@ use mime;
 use serde::{Deserialize, Serialize};
 use serde_json;
 
-use super::{ApiError, ApiResult, ApiVersion, ApiVersionRequest, Session};
+use super::{ApiError, ApiResult, ApiVersion, ApiVersionRequest};
 use super::http;
 use super::utils;
 
@@ -41,7 +41,7 @@ pub trait Service {
 
     /// Issue a request returning a JSON.
     fn fetch_json<T>(&self, request: http::Request) -> ApiResult<T>
-            where for<'de> T: Deserialize<'de> {
+            where for<'de> T: Deserialize<'de> + 'static {
         ApiResult::new(self.request(request))
     }
 

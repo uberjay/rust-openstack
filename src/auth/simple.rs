@@ -14,8 +14,11 @@
 
 //! Simple authentication methods.
 
+use futures::future;
 use hyper::{Body, Client, Method, Request, Response, Uri};
+use tokio_core::reactor::Handle;
 
+use super::super::ApiError;
 use super::super::ApiResult;
 use super::super::http;
 use super::AuthMethod;
@@ -35,24 +38,24 @@ impl NoAuth {
     ///
     /// This endpoint will be returned in response to all get_endpoint calls
     /// of the [AuthMethod](trait.AuthMethod.html) trait.
-    pub fn new(endpoint: Uri) -> NoAuth {
+    pub fn new(io_handle: &Handle, endpoint: Uri) -> NoAuth {
         NoAuth {
             endpoint: endpoint,
-            client: http::Client::new(),
+            client: http::Client::new(io_handle),
         }
     }
 }
 
 impl AuthMethod for NoAuth {
     /// Create a request.
-    fn request(&self, request: Request<Body>) -> ApiResult<Response> {
+    fn request(&self, request: Request<Body>) -> http::ApiResponse {
         self.client.request(request)
     }
 
     /// Get a predefined endpoint for all service types
     fn get_endpoint(&self, _service_type: String,
                     _endpoint_interface: Option<String>) -> ApiResult<Uri> {
-        Ok(self.endpoint.clone())
+        ApiResult::ok(self.endpoint.clone())
     }
 }
 

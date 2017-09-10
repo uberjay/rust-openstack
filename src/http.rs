@@ -34,19 +34,20 @@ use super::ApiError;
 pub type Request = HyperRequest<Body>;
 
 /// Type of HTTP(s) client.
+#[derive(Debug, Clone)]
 pub struct Client {
     /// Instance of Hyper client used with this client instance.
     pub inner: HyperClient<HttpsConnector>
 }
 
-/// API response low-level object.
-pub struct ApiResponse(FutureResponse);
-
 /// Result of an API call.
 pub struct ApiResult<T> {
-    inner: Box<Future<Item=Chunk, Error=ApiError> + 'static>,
+    inner: Box<Future<Item=T, Error=ApiError> + 'static>,
     _marker: PhantomData<T>
 }
+
+/// API raw response.
+pub type ApiResponse = ApiResult<Response>;
 
 /// Trait representing something that can be converted from a Body.
 pub trait ParseBody: Sized {
@@ -70,45 +71,76 @@ impl Client {
 
     /// Send a request.
     pub fn request(self, request: Request) -> ApiResponse {
-        ApiResponse(self.inner.request(request))
+        ApiResult::with_response(self.inner.request(request))
     }
 }
 
-impl Future for ApiResponse {
-    type Item = Response;
-    type Error = ApiError;
-
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let resp = try_ready!(self.0.poll());
-
-        let status = resp.status();
-        if status.is_success() {
-            Ok(Async::Ready(resp))
-        } else {
-            Err(ApiError::HttpError(status, resp))
-        }
-    }
-}
-
-impl<T> ApiResult<T> where T: ParseBody {
-    /// New result from a response.
-    pub fn new(response: ApiResponse) -> ApiResult<T> {
+impl ApiResult<Response> {
+    /// New result directly from a response.
+    pub fn with_response<F, E>(f: F) -> ApiResult<Response>
+            where F: Future<Item=Response, Error=E> + 'static,
+                  ApiError: From<E>, E: 'static {
         ApiResult {
-            inner: Box::new(response.and_then(|res| {
-                res.body().concat2().map_err(From::from)
+            inner: Box::new(f.map_err(From::from).and_then(|resp| {
+                let status = resp.status();
+                if status.is_success() {
+                    future::ok(resp)
+                } else {
+                    future::err(ApiError::HttpError(status, resp))
+                }
             })),
             _marker: PhantomData
         }
     }
 }
 
-impl<T> Future for ApiResult<T> where T: ParseBody {
+impl<T> ApiResult<T> where T: 'static {
+    /// New successful result.
+    pub fn ok(item: T) -> ApiResult<T> {
+        ApiResult {
+            inner: Box::new(future::ok(item)),
+            _marker: PhantomData
+        }
+    }
+
+    /// New error result.
+    pub fn err(e: ApiError) -> ApiResult<T> {
+        ApiResult {
+            inner: Box::new(future::err(e)),
+            _marker: PhantomData
+        }
+    }
+
+    /// Build an ApiResult from another future.
+    pub fn from_future<F>(f: F) -> ApiResult<T>
+            where F: Future<Item=T, Error=ApiError> + 'static {
+        ApiResult {
+            inner: Box::new(f),
+            _marker: PhantomData
+        }
+    }
+}
+
+impl<T> ApiResult<T> where T: ParseBody + 'static {
+    /// New result from a response.
+    pub fn new(response: ApiResponse) -> ApiResult<T> {
+        ApiResult {
+            inner: Box::new(response.and_then(|res| {
+                res.body().concat2().map_err(From::from).and_then(|chunk| {
+                    ParseBody::parse_body(&chunk)
+                })
+            })),
+            _marker: PhantomData
+        }
+    }
+}
+
+impl<T> Future for ApiResult<T> {
     type Item = T;
     type Error = ApiError;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let chunk = try_ready!(self.inner.poll());
-        ParseBody::parse_body(&chunk).map(Async::Ready)
+        self.inner.poll()
     }
 }
 

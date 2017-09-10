@@ -20,6 +20,7 @@ use std::io;
 use std::str::FromStr;
 
 use hyper::{Error as HttpClientError, Response, StatusCode};
+use hyper::error::UriError;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde::de::{Error as DeserError, Visitor};
 use serde_json::Error as JsonError;
@@ -44,6 +45,9 @@ pub enum ApiError {
     /// Protocol-level error reported by underlying HTTP library.
     ProtocolError(HttpClientError),
 
+    /// Error parsing URI.
+    UriError(UriError),
+
     /// JSON parsing failed.
     InvalidJson(JsonError),
 
@@ -57,7 +61,10 @@ pub enum ApiError {
         requested: ApiVersionRequest,
         minimum: Option<ApiVersion>,
         maximum: Option<ApiVersion>
-    }
+    },
+
+    #[doc(hidden)]
+    __Nonexhaustive,
 }
 
 /// API version (major, minor).
@@ -97,6 +104,7 @@ impl fmt::Display for ApiError {
             ApiError::HttpError(status, ..) =>
                 write!(f, "HTTP error {}", status),
             ApiError::ProtocolError(ref e) => fmt::Display::fmt(e, f),
+            ApiError::UriError(ref e) => fmt::Display::fmt(e, f),
             ApiError::InvalidJson(ref e) => fmt::Display::fmt(e, f),
             ApiError::InvalidApiVersion { value: ref val, message: ref msg } =>
                 write!(f, "{} is not a valid API version: {}", val, msg),
@@ -116,6 +124,7 @@ impl Error for ApiError {
             ApiError::InvalidInput(..) => "Invalid value(s) provided",
             ApiError::HttpError(..) => "HTTP error",
             ApiError::ProtocolError(ref e) => e.description(),
+            ApiError::UriError(ref e) => e.description(),
             ApiError::InvalidJson(ref e) => e.description(),
             ApiError::InvalidApiVersion { .. } =>
                 "Invalid API version",
@@ -136,6 +145,12 @@ impl Error for ApiError {
 impl From<HttpClientError> for ApiError {
     fn from(value: HttpClientError) -> ApiError {
         ApiError::ProtocolError(value)
+    }
+}
+
+impl From<UriError> for ApiError {
+    fn from(value: UriError) -> ApiError {
+        ApiError::UriError(value)
     }
 }
 
