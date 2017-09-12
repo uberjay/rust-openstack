@@ -203,7 +203,7 @@ impl<'s> ServerSummary<'s> {
 
     /// Get details.
     pub fn details(&self) -> ApiResult<Server<'s>> {
-        ServerManager::get_server(self.service.clone(), &self.inner.id)
+        ServerManager::get_server(self.service, &self.inner.id)
     }
 }
 

@@ -48,8 +48,11 @@ pub trait Service {
     /// Issue a request with JSON and receive a JSON back.
     fn json<Req, Res>(&self, request: http::Request, body: &Req)
             -> ApiResult<Res>
-            where Req: Serialize, for<'de> Res: Deserialize<'de> {
-        let str_body = serde_json::to_string(body)?;
+            where Req: Serialize, for<'de> Res: Deserialize<'de> + 'static {
+        let str_body = match serde_json::to_string(body).map_err(From::from) {
+            Ok(body) => body,
+            Err(e) => return ApiResult::err(e)
+        };
         request.set_body(str_body);
         request.headers_mut().set(ContentType(mime::APPLICATION_JSON));
         self.fetch_json(request)
@@ -85,23 +88,18 @@ pub trait ApiVersioning {
                 if req >= min && req <= max {
                     req
                 } else {
-                    return None
+                    return None;
                 },
             ApiVersionRequest::Choice(vec) =>
-                if vec.is_empty() {
-                    return None;
-                } else {
-                    vec.into_iter().filter(|x| {
-                        *x >= min && *x <= max
-                    }).max()
+                match vec.into_iter().filter(|x| {
+                    *x >= min && *x <= max
+                }).max() {
+                    Some(x) => x,
+                    None => return None
                 }
         };
 
-        if self.set_api_version(version) {
-            Some(version)
-        } else {
-            None
-        }
+        self.set_api_version(version)
     }
 }
 

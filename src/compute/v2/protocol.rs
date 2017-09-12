@@ -188,7 +188,7 @@ pub struct VersionRoot {
 impl Version {
     pub fn root(&self) -> Result<Uri, ApiError> {
         match self.links.iter().find(|x| &x.rel == "self") {
-            Some(link) => FromStr::from_str(&link.href)?,
+            Some(link) => FromStr::from_str(&link.href).map_err(From::from),
             None => {
                 error!("Received malformed version response: no self link \
                         in {:?}", self.links);

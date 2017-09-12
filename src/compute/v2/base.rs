@@ -17,7 +17,7 @@
 use std::io::Read;
 use std::str::FromStr;
 
-use futures::{future, Future};
+use futures::{future, Future, Stream};
 use hyper::{Get, NotFound, Uri};
 use hyper::client::Response;
 use hyper::header::Headers;
@@ -50,55 +50,51 @@ const VERSION_ID: &'static str = "v2.1";
 
 impl ComputeV2 {
     /// Create a new Compute service client.
-    pub fn new<A: AuthMethod>(auth: A) -> ApiResult<ComputeV2> {
-        let maybe_ep = auth.get_endpoint(SERVICE_TYPE, None);
-        maybe_ep.and_then(|ep| {
+    pub fn new<A: AuthMethod + 'static>(auth: A) -> ApiResult<ComputeV2> {
+        let maybe_ep = auth.get_endpoint(SERVICE_TYPE.to_string(), None);
+        ApiResult::from_future(maybe_ep.and_then(|ep| {
              let secure = ep.scheme() == Some("https");
              let res1 = auth.request(http::Request::new(Get, ep.clone()));
              res1.or_else(|err| {
                  match err {
-                    Err(HttpError(NotFound, ..)) => {
-                        // ...
+                    HttpError(NotFound, ..) => {
+                        // TODO: try striping /
+                        ApiResult::err(err)
                     },
-                    err => future::err(err)
+                    err => ApiResult::err(err)
                  }
-             }).map(|res| {
-                let (min, max) = extract_info(res, secure)?;
-                ComputeV2 {
+             }).and_then(|res| {
+                 res.body().concat2().map_err(From::from)
+             }).and_then(|chunk| {
+                let (min, max) = match extract_info(&chunk) {
+                    Ok(x) => x,
+                    Err(e) => return ApiResult::err(e)
+                };
+                ApiResult::ok(ComputeV2 {
                     auth: Box::new(auth),
                     root: ep,
                     min_version: min,
-                    max_version: max
-                }
+                    max_version: max,
+                    current_version: None
+                })
              })
-        })
+        }))
     }
 }
 
-fn extract_info(mut resp: Response, secure: bool)
-        -> Result<(ApiVersion, ApiVersion), ApiError> {
-    let mut body = String::new();
-    let _ = resp.read_to_string(&mut body)?;
-
+fn extract_info(resp: &[u8]) -> Result<(ApiVersion, ApiVersion), ApiError> {
     // First, assume it's a versioned URL.
-    let mut info = match serde_json::from_str::<VersionRoot>(&body) {
-        Ok(ver) => Ok((ver.min_version, ver.version)),
+    match serde_json::from_slice::<VersionRoot>(resp) {
+        Ok(ver) => Ok((ver.version.min_version, ver.version.version)),
         Err(..) => {
             // Second, assume it's a root URL.
-            let vers: VersionsRoot = serde_json::from_str(&body)?;
+            let vers: VersionsRoot = serde_json::from_slice(resp)?;
             match vers.versions.into_iter().find(|x| &x.id == VERSION_ID) {
                 Some(ver) => Ok((ver.min_version, ver.version)),
                 None => Err(EndpointNotFound(String::from(SERVICE_TYPE)))
             }
         }
-    }?;
-
-    // Nova returns insecure URLs even for secure protocol. WHY??
-    if secure {
-        let _ = info.root_url.set_scheme("https").unwrap();
     }
-
-    Ok(info)
 }
 
 impl Service for ComputeV2 {
