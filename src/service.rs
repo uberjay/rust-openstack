@@ -14,10 +14,12 @@
 
 //! Generic API bits for implementing new services.
 
+use std::fmt;
 use std::marker::PhantomData;
+use std::str::FromStr;
 
 use futures::{future, Future, Poll};
-use hyper::{Body, Client, Headers, Method, Request, Response, Uri};
+use hyper::{Body, Client, Get, Headers, Method, Request, Response, Uri};
 use hyper::client::FutureResponse;
 use hyper::header::{ContentType, Header};
 use mime;
@@ -27,6 +29,52 @@ use serde_json;
 use super::{ApiError, ApiResult, ApiVersion, ApiVersionRequest};
 use super::http;
 use super::utils;
+
+
+/// Type of query parameters.
+#[derive(Clone, Debug)]
+pub struct Query(pub Vec<(String, String)>);
+
+
+impl Query {
+    /// Empty query.
+    pub fn new() -> Query {
+        Query(Vec::new())
+    }
+
+    /// Add an item to the query.
+    pub fn push<K, V>(&mut self, param: K, value: V)
+            where K: Into<String>, V: ToString {
+        self.0.push((param.into(), value.to_string()))
+    }
+
+    /// Add a string item to the query.
+    pub fn push_str<K, V>(&mut self, param: K, value: V)
+            where K: Into<String>, V: Into<String> {
+        self.0.push((param.into(), value.into()))
+    }
+
+    /// Create a URI out of path URI and query.
+    fn create_uri(&self, path: &str) -> Result<Uri, ApiError> {
+        let with_path = if self.0.is_empty() {
+            path.to_string()
+        } else {
+            format!("{}?{}", path, self)
+        };
+
+        Uri::from_str(&with_path).map_err(From::from)
+    }
+}
+
+impl fmt::Display for Query {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for &(ref k, ref v) in &self.0 {
+            write!(f, "{}={}&", k, v)?;
+        }
+
+        Ok(())
+    }
+}
 
 
 /// Trait of a service.
@@ -46,7 +94,7 @@ pub trait Service {
     }
 
     /// Issue a request with JSON and receive a JSON back.
-    fn json<Req, Res>(&self, request: http::Request, body: &Req)
+    fn json<Req, Res>(&self, mut request: http::Request, body: &Req)
             -> ApiResult<Res>
             where Req: Serialize, for<'de> Res: Deserialize<'de> + 'static {
         let str_body = match serde_json::to_string(body).map_err(From::from) {
@@ -56,6 +104,18 @@ pub trait Service {
         request.set_body(str_body);
         request.headers_mut().set(ContentType(mime::APPLICATION_JSON));
         self.fetch_json(request)
+    }
+
+    /// Simple GET request returning a JSON.
+    fn get<Res>(&self, path: &str, query: &Query) -> ApiResult<Res>
+            where for<'de> Res: Deserialize<'de> + 'static {
+        match query.create_uri(path) {
+            Ok(uri) => {
+                let req = http::Request::new(Get, uri);
+                self.fetch_json(req)
+            },
+            Err(e) => ApiResult::err(From::from(e))
+        }
     }
 }
 
@@ -100,30 +160,6 @@ pub trait ApiVersioning {
         };
 
         self.set_api_version(version)
-    }
-}
-
-/// Type of query parameters.
-#[derive(Clone, Debug)]
-pub struct Query(pub Vec<(String, String)>);
-
-
-impl Query {
-    /// Empty query.
-    pub fn new() -> Query {
-        Query(Vec::new())
-    }
-
-    /// Add an item to the query.
-    pub fn push<K, V>(&mut self, param: K, value: V)
-            where K: Into<String>, V: ToString {
-        self.0.push((param.into(), value.to_string()))
-    }
-
-    /// Add a strng item to the query.
-    pub fn push_str<K, V>(&mut self, param: K, value: V)
-            where K: Into<String>, V: Into<String> {
-        self.0.push((param.into(), value.into()))
     }
 }
 

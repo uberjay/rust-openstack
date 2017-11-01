@@ -15,6 +15,7 @@
 //! Foundation bits exposing the Compute API.
 
 use std::io::Read;
+use std::rc::Rc;
 use std::str::FromStr;
 
 use futures::{future, Future, Stream};
@@ -29,15 +30,16 @@ use super::super::super::auth::AuthMethod;
 use super::super::super::service::{ApiVersioning, Service};
 use super::super::super::http;
 use super::protocol::{VersionRoot, VersionsRoot};
+use super::{ServerQuery, ServerList};
 
 
 #[derive(Clone, Debug)]
-pub struct ComputeV2 {
-    auth: Box<AuthMethod>,
-    root: Uri,
-    min_version: ApiVersion,
-    max_version: ApiVersion,
-    current_version: Option<ApiVersion>
+pub struct ComputeService {
+    pub auth: Box<AuthMethod>,
+    pub root: Uri,
+    pub min_version: ApiVersion,
+    pub max_version: ApiVersion,
+    pub current_version: Option<ApiVersion>
 }
 
 
@@ -45,44 +47,24 @@ header! {
     (XOpenStackNovaApiVersion, "X-OpenStack-Nova-Api-Version") => [ApiVersion]
 }
 
-const SERVICE_TYPE: &'static str = "compute";
+pub const SERVICE_TYPE: &'static str = "compute";
 const VERSION_ID: &'static str = "v2.1";
 
-impl ComputeV2 {
-    /// Create a new Compute service client.
-    pub fn new<A: AuthMethod + 'static>(auth: A) -> ApiResult<ComputeV2> {
-        let maybe_ep = auth.get_endpoint(SERVICE_TYPE.to_string(), None);
-        ApiResult::from_future(maybe_ep.and_then(|ep| {
-             let secure = ep.scheme() == Some("https");
-             let res1 = auth.request(http::Request::new(Get, ep.clone()));
-             res1.or_else(|err| {
-                 match err {
-                    HttpError(NotFound, ..) => {
-                        // TODO: try striping /
-                        ApiResult::err(err)
-                    },
-                    err => ApiResult::err(err)
-                 }
-             }).and_then(|res| {
-                 res.body().concat2().map_err(From::from)
-             }).and_then(|chunk| {
-                let (min, max) = match extract_info(&chunk) {
-                    Ok(x) => x,
-                    Err(e) => return ApiResult::err(e)
-                };
-                ApiResult::ok(ComputeV2 {
-                    auth: Box::new(auth),
-                    root: ep,
-                    min_version: min,
-                    max_version: max,
-                    current_version: None
-                })
-             })
-        }))
+impl ComputeService {
+    pub fn new<A>(auth: A, root: Uri, min_version: ApiVersion,
+                  max_version: ApiVersion) -> ComputeService
+            where A: AuthMethod + 'static {
+        ComputeService {
+            auth: Box::new(auth),
+            root: root,
+            min_version: min_version,
+            max_version: max_version,
+            current_version: None
+        }
     }
 }
 
-fn extract_info(resp: &[u8]) -> Result<(ApiVersion, ApiVersion), ApiError> {
+pub fn extract_info(resp: &[u8]) -> Result<(ApiVersion, ApiVersion), ApiError> {
     // First, assume it's a versioned URL.
     match serde_json::from_slice::<VersionRoot>(resp) {
         Ok(ver) => Ok((ver.version.min_version, ver.version.version)),
@@ -97,34 +79,19 @@ fn extract_info(resp: &[u8]) -> Result<(ApiVersion, ApiVersion), ApiError> {
     }
 }
 
-impl Service for ComputeV2 {
+impl Service for ComputeService {
     fn get_endpoint(&self, parts: &Uri) -> Uri {
         let s = format!("{}/{}", self.root, parts);
         FromStr::from_str(&s).unwrap()
     }
 
-    fn request(&self, request: http::Request) -> http::ApiResponse {
+    fn request(&self, mut request: http::Request) -> http::ApiResponse {
         if ! request.uri().is_absolute() {
             let new_uri = self.get_endpoint(&request.uri());
             request.set_uri(new_uri);
         }
 
         self.auth.request(request)
-    }
-}
-
-impl ApiVersioning for ComputeV2 {
-    fn supported_api_version_range(&self) -> (ApiVersion, ApiVersion) {
-        (self.min_version, self.max_version)
-    }
-
-    fn set_api_version(&mut self, version: ApiVersion) -> Option<ApiVersion> {
-        if version >= self.min_version && version <= self.max_version {
-            self.current_version = Some(version);
-            Some(version)
-        } else {
-            None
-        }
     }
 }
 

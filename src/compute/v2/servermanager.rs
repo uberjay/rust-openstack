@@ -16,18 +16,21 @@
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, Ipv6Addr};
+use std::rc::Rc;
 
 use chrono::{DateTime, FixedOffset};
+use futures::Future;
 
 use super::super::super::{ApiResult, Sort};
-use super::super::super::service::Query;
-use super::{ComputeV2, protocol};
+use super::super::super::service::{Query, Service};
+use super::base::ComputeService;
+use super::{Compute, protocol};
 
 
 /// A query to server list.
 #[derive(Clone, Debug)]
-pub struct ServerQuery<'s> {
-    service: &'s ComputeV2,
+pub struct ServerQuery {
+    service: Rc<ComputeService>,
     /// Underlying query.
     pub query: Query,
 }
@@ -77,41 +80,41 @@ pub struct ServerQuery<'s> {
 ///          server.name(), server.image().id(), server.flavor().id());
 /// ```
 #[derive(Clone, Debug)]
-pub struct ServerManager<'s> {
-    service: &'s ComputeV2
+pub struct ServerManager {
+    service: Rc<ComputeService>
 }
 
 /// Structure representing a summary of a single server.
 #[derive(Clone, Debug)]
-pub struct Server<'s> {
-    service: &'s ComputeV2,
-    inner: protocol::Server
+pub struct Server {
+    pub(super) service: Rc<ComputeService>,
+    pub(super) inner: protocol::Server
 }
 
 /// Structure representing a summary of a single server.
 #[derive(Clone, Debug)]
-pub struct ServerSummary<'s> {
-    service: &'s ComputeV2,
+pub struct ServerSummary {
+    service: Rc<ComputeService>,
     inner: protocol::ServerSummary
 }
 
 /// List of servers.
-pub type ServerList<'s> = Vec<ServerSummary<'s>>;
+pub type ServerList = Vec<ServerSummary>;
 
 /// A reference to a flavor.
 #[derive(Clone, Copy, Debug)]
 pub struct FlavorRef<'s> {
-    server: &'s Server<'s>
+    server: &'s Server
 }
 
 /// A reference to an image.
 #[derive(Clone, Copy, Debug)]
 pub struct ImageRef<'s> {
-    server: &'s Server<'s>
+    server: &'s Server
 }
 
 
-impl<'s> Server<'s> {
+impl Server {
     /// Get a reference to IPv4 address.
     pub fn access_ipv4(&self) -> &Option<Ipv4Addr> {
         &self.inner.accessIPv4
@@ -138,7 +141,7 @@ impl<'s> Server<'s> {
     }
 
     /// Get a reference to the flavor.
-    pub fn flavor(&'s self) -> FlavorRef<'s> {
+    pub fn flavor<'s>(&'s self) -> FlavorRef<'s> {
         FlavorRef {
             server: self
         }
@@ -150,7 +153,7 @@ impl<'s> Server<'s> {
     }
 
     /// Get a reference to the image.
-    pub fn image(&'s self) -> ImageRef<'s> {
+    pub fn image<'s>(&'s self) -> ImageRef<'s> {
         ImageRef {
             server: self
         }
@@ -190,7 +193,7 @@ impl<'s> ImageRef<'s> {
     // TODO: #[cfg(feature = "image")] pub fn details(&self) -> ApiResult<Image>
 }
 
-impl<'s> ServerSummary<'s> {
+impl ServerSummary {
     /// Get a reference to server unique ID.
     pub fn id(&self) -> &String {
         &self.inner.id
@@ -202,15 +205,15 @@ impl<'s> ServerSummary<'s> {
     }
 
     /// Get details.
-    pub fn details(&self) -> ApiResult<Server<'s>> {
-        ServerManager::get_server(self.service, &self.inner.id)
+    pub fn details(&self) -> ApiResult<Server> {
+        super::get_server(&self.service, &self.inner.id)
     }
 }
 
-impl<'s> ServerQuery<'s> {
-    fn new(service: &'s ComputeV2) -> ServerQuery<'s> {
+impl ServerQuery {
+    pub(super) fn new(parent: &Compute) -> ServerQuery {
         ServerQuery {
-            service: service,
+            service: parent.service.clone(),
             query: Query::new(),
         }
     }
@@ -315,58 +318,29 @@ impl<'s> ServerQuery<'s> {
 
     /// Execute this request and return its result.
     #[allow(unused_results)]
-    pub fn fetch(self) -> ApiResult<ServerList<'s>> {
-        let service = self.service;
-        let query = self.query;
-
-        trace!("Listing compute servers with {:?}", query);
-        let inner: protocol::ServersRoot = service.get_json(&["servers"],
-                                                            query)?;
-        debug!("Received {} compute servers", inner.servers.len());
-        trace!("Received servers: {:?}", inner.servers);
-        Ok(inner.servers.into_iter().map(|x| ServerSummary {
-            service: service.clone(),
-            inner: x
-        }).collect())
+    pub fn fetch(self) -> ApiResult<ServerList> {
+        let service = self.service.clone();
+        trace!("Listing compute servers with {:?}", self.query);
+        ApiResult::from_future(
+            self.service.get::<protocol::ServersRoot>("/servers", &self.query).
+                map(move |inner| {
+                    debug!("Received {} compute servers", inner.servers.len());
+                    trace!("Received servers: {:?}", inner.servers);
+                    inner.servers.into_iter().map(|x| ServerSummary {
+                        service: service.clone(),
+                        inner: x
+                    }).collect()
+                })
+        )
     }
 }
 
-impl<'s> ServerManager<'s> {
+impl ServerManager {
     /// Constructor for server manager.
-    pub fn new(service: &'s ComputeV2) -> ServerManager<'s> {
+    pub fn new(service: ComputeService) -> ServerManager {
         ServerManager {
-            service: service
+            service: Rc::new(service)
         }
-    }
-
-    /// Run a query against server list.
-    ///
-    /// Note that this method does not return results immediately, but rather
-    /// a [ServerQuery](struct.ServerQuery.html) object that
-    /// you can futher specify with e.g. filtering or sorting.
-    pub fn query(&self) -> ServerQuery<'s> {
-        ServerQuery::new(self.service)
-    }
-
-    /// List all servers.
-    pub fn list(&self) -> ApiResult<ServerList<'s>> {
-        self.query().fetch()
-    }
-
-    /// Get a server.
-    pub fn get<Id: AsRef<str>>(&self, id: Id) -> ApiResult<Server<'s>> {
-        ServerManager::get_server(self.service.clone(), id.as_ref())
-    }
-
-    fn get_server(service: &'s ComputeV2, id: &str) -> ApiResult<Server<'s>> {
-        trace!("Get compute server {}", id);
-        let inner: protocol::ServerRoot = service.get_json(&["servers", id],
-                                                           Query::new())?;
-        trace!("Received {:?}", inner.server);
-        Ok(Server {
-            service: service,
-            inner: inner.server
-        })
     }
 }
 

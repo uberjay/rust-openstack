@@ -70,7 +70,7 @@ impl Client {
     }
 
     /// Send a request.
-    pub fn request(self, request: Request) -> ApiResponse {
+    pub fn request(&self, request: Request) -> ApiResponse {
         ApiResult::with_response(self.inner.request(request))
     }
 }

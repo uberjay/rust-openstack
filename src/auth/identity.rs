@@ -215,7 +215,7 @@ impl PasswordAuth {
     }
 
     fn get_token(&self) -> ApiResult<String> {
-        let req = http::Request::new(Post, self.token_endpoint.clone());
+        let mut req = http::Request::new(Post, self.token_endpoint.clone());
         req.headers_mut().set(ContentType(mime::APPLICATION_JSON));
         req.set_body(self.body.clone());
         ApiResult::from_future(
@@ -293,7 +293,7 @@ impl AuthMethod for PasswordAuth {
         let maybe_token = self.get_token();
         // FIXME: is it possible to do it without cloning?
         let client = self.client.clone();
-        ApiResult::with_response(maybe_token.and_then(|token| {
+        ApiResult::with_response(maybe_token.and_then(move |token| {
             request.headers_mut().set(protocol::AuthTokenHeader(token));
             client.request(request)
         }))

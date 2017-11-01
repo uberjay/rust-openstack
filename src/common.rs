@@ -111,7 +111,8 @@ impl fmt::Display for ApiError {
             ApiError::UnsupportedApiVersion {
                 requested: ref req, minimum: minv, maximum: maxv
             } => write!(f, "Unsupported version requested: {:?}, supported \
-                versions are {:?} to {:?}", req, minv, maxv)
+                versions are {:?} to {:?}", req, minv, maxv),
+            _ => unreachable!()
         }
     }
 }
@@ -129,7 +130,8 @@ impl Error for ApiError {
             ApiError::InvalidApiVersion { .. } =>
                 "Invalid API version",
             ApiError::UnsupportedApiVersion { .. } =>
-                "Unsupported API version requested"
+                "Unsupported API version requested",
+            _ => unreachable!()
         }
     }
 
