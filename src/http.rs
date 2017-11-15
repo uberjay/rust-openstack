@@ -16,12 +16,8 @@
 
 use std::marker::PhantomData;
 
-use futures::{Async, future, Future, Poll, Stream};
-use futures::future::AndThen;
-use futures::stream::Concat2;
-use hyper::{Body, Chunk, Client as HyperClient, Error as HyperError,
-            Request as HyperRequest, Response};
-use hyper::client::FutureResponse;
+use futures::{future, Future, Poll, Stream};
+use hyper::{Body, Client as HyperClient, Request as HyperRequest, Response};
 use hyper_rustls::HttpsConnector;
 use serde::Deserialize;
 use serde_json;
@@ -41,6 +37,8 @@ pub struct Client {
 }
 
 /// Result of an API call.
+// TODO: implement Debug?
+#[allow(missing_debug_implementations)]
 pub struct ApiResult<T> {
     inner: Box<Future<Item=T, Error=ApiError> + 'static>,
     _marker: PhantomData<T>

@@ -14,16 +14,11 @@
 
 //! Various utilities.
 
-use std::cell::{Ref, RefCell};
-use std::collections::HashMap;
 use std::fmt::Display;
-use std::hash::Hash;
 use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer};
 use serde::de::Error as DeserError;
-
-use super::ApiResult;
 
 
 /// Deserialize value where empty string equals None.

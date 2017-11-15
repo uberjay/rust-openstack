@@ -54,11 +54,11 @@ mod protocol;
 use std::fmt::Display;
 use std::rc::Rc;
 
-use futures::{future, Future, Stream};
-use hyper::{Get, NotFound, Uri};
+use futures::{Future, Stream};
+use hyper::{Get, NotFound};
 
-use super::super::{ApiError, ApiResult, ApiVersion};
-use super::super::ApiError::{HttpError, EndpointNotFound};
+use super::super::{ApiResult, ApiVersion};
+use super::super::ApiError::HttpError;
 use super::super::auth::AuthMethod;
 use super::super::service::{ApiVersioning, Query, Service};
 use super::super::http;
@@ -81,7 +81,7 @@ impl Compute {
     pub fn new<A: AuthMethod + 'static>(auth: A) -> ApiResult<Compute> {
         let maybe_ep = auth.get_endpoint(base::SERVICE_TYPE.to_string(), None);
         ApiResult::from_future(maybe_ep.and_then(|ep| {
-             let secure = ep.scheme() == Some("https");
+             // TODO: let secure = ep.scheme() == Some("https");
              let res1 = auth.request(http::Request::new(Get, ep.clone()));
              res1.or_else(|err| {
                  match err {
@@ -165,7 +165,7 @@ impl ApiVersioning for Compute {
         };
 
         if maybe_version.is_some() {
-            self.service.current_version = maybe_version.clone()
+            Rc::make_mut(&mut self.service).current_version = maybe_version.clone()
         }
 
         maybe_version

@@ -16,7 +16,7 @@
 
 use std::fmt::Debug;
 
-use hyper::{Body, Request, Response, Uri};
+use hyper::Uri;
 
 use super::super::ApiResult;
 use super::super::http;

@@ -186,6 +186,8 @@ pub struct VersionRoot {
 
 
 impl Version {
+    // TODO: use this
+    #[allow(dead_code)]
     pub fn root(&self) -> Result<Uri, ApiError> {
         match self.links.iter().find(|x| &x.rel == "self") {
             Some(link) => FromStr::from_str(&link.href).map_err(From::from),

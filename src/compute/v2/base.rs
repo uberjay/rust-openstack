@@ -14,23 +14,17 @@
 
 //! Foundation bits exposing the Compute API.
 
-use std::io::Read;
-use std::rc::Rc;
 use std::str::FromStr;
 
-use futures::{future, Future, Stream};
-use hyper::{Get, NotFound, Uri};
-use hyper::client::Response;
-use hyper::header::Headers;
+use hyper::Uri;
 use serde_json;
 
-use super::super::super::{ApiError, ApiResult, ApiVersion};
-use super::super::super::ApiError::{HttpError, EndpointNotFound};
+use super::super::super::{ApiError, ApiVersion};
+use super::super::super::ApiError::EndpointNotFound;
 use super::super::super::auth::AuthMethod;
-use super::super::super::service::{ApiVersioning, Service};
+use super::super::super::service::Service;
 use super::super::super::http;
 use super::protocol::{VersionRoot, VersionsRoot};
-use super::{ServerQuery, ServerList};
 
 
 #[derive(Clone, Debug)]

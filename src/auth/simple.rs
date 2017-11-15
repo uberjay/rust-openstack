@@ -14,11 +14,9 @@
 
 //! Simple authentication methods.
 
-use futures::future;
-use hyper::{Body, Client, Method, Request, Response, Uri};
+use hyper::{Body, Request, Uri};
 use tokio_core::reactor::Handle;
 
-use super::super::ApiError;
 use super::super::ApiResult;
 use super::super::http;
 use super::AuthMethod;

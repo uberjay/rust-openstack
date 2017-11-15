@@ -18,13 +18,12 @@ use std::collections::hash_map::DefaultHasher;
 use std::env;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::io::Read;
 use std::str::FromStr;
 
 use futures::Future;
-use hyper::{Body, Get, Method, Request, Response, Post, StatusCode, Uri};
+use hyper::{Body, Get, Request, Response, Post, StatusCode, Uri};
 use hyper::Error as HttpClientError;
-use hyper::header::{ContentType, Headers};
+use hyper::header::ContentType;
 use mime;
 use tokio_core::reactor::Handle;
 
@@ -137,7 +136,7 @@ impl Identity {
 
     /// Create an authentication method based on provided information.
     pub fn create(self) -> Result<PasswordAuth, ApiError> {
-        /// TODO: support more authentication methods (at least a token)
+        // TODO: support more authentication methods (at least a token)
         let password_identity = match self.password_identity {
             Some(p) => p,
             None =>
@@ -146,7 +145,7 @@ impl Identity {
                 )
         };
 
-        /// TODO: support unscoped tokens
+        // TODO: support unscoped tokens
         let project_scope = match self.project_scope {
             Some(p) => p,
             None =>
@@ -161,7 +160,6 @@ impl Identity {
 
     /// Create an authentication method from environment variables.
     pub fn from_env(io_handle: &Handle) -> Result<PasswordAuth, ApiError> {
-        let client = http::Client::new(io_handle);
         let auth_uri = _get_env("OS_AUTH_URL")?;
         let id = match FromStr::from_str(&auth_uri) {
             Ok(uri) => Identity::new(io_handle, uri),
@@ -235,7 +233,7 @@ impl PasswordAuth {
     }
 }
 
-fn token_from_response(mut resp: Response) -> Result<String, ApiError> {
+fn token_from_response(resp: Response) -> Result<String, ApiError> {
     let token_value = match resp.status() {
         StatusCode::Ok | StatusCode::Created => {
             let header: Option<&protocol::SubjectTokenHeader> =
@@ -249,10 +247,7 @@ fn token_from_response(mut resp: Response) -> Result<String, ApiError> {
                 }
             }
         },
-        StatusCode::Unauthorized => {
-            return Err(ApiError::HttpError(resp.status(), resp));
-        },
-        other => {
+        _ => {
             return Err(ApiError::HttpError(resp.status(), resp));
         }
     };

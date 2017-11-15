@@ -60,7 +60,6 @@
         unused_results,
         while_true)]
 
-#[macro_use]
 extern crate futures;
 #[cfg(feature = "compute")]
 extern crate chrono;

@@ -15,20 +15,16 @@
 //! Generic API bits for implementing new services.
 
 use std::fmt;
-use std::marker::PhantomData;
 use std::str::FromStr;
 
-use futures::{future, Future, Poll};
-use hyper::{Body, Client, Get, Headers, Method, Request, Response, Uri};
-use hyper::client::FutureResponse;
-use hyper::header::{ContentType, Header};
+use hyper::{Get, Uri};
+use hyper::header::ContentType;
 use mime;
 use serde::{Deserialize, Serialize};
 use serde_json;
 
 use super::{ApiError, ApiResult, ApiVersion, ApiVersionRequest};
 use super::http;
-use super::utils;
 
 
 /// Type of query parameters.
