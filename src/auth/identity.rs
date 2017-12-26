@@ -23,7 +23,7 @@ use std::str::FromStr;
 use futures::Future;
 use hyper::{Body, Get, Request, Response, Post, StatusCode, Uri};
 use hyper::Error as HttpClientError;
-use hyper::header::ContentType;
+use hyper::header::{ContentLength, ContentType};
 use mime;
 use tokio_core::reactor::Handle;
 
@@ -199,15 +199,19 @@ impl PasswordAuth {
         let user = password_identity.password.user.name.clone();
         let body = protocol::ProjectScopedAuthRoot::new(password_identity,
                                                         project_scope);
-        // TODO: allow /v3 postfix built into auth_uri?
-        let token_endpoint = FromStr::from_str(
-            &format!("{}/v3/auth/tokens", auth_uri)).unwrap();
+        trace!("Creating an identity object for URI {}", auth_uri);
+        let token_endpoint = if auth_uri.path().ends_with("/v3") {
+            format!("{}/auth/tokens", auth_uri)
+        } else {
+            format!("{}/v3/auth/tokens", auth_uri)
+        };
+
         PasswordAuth {
             client: client,
             auth_uri: auth_uri,
             region: region,
             body: body.to_string().unwrap(),
-            token_endpoint: token_endpoint,
+            token_endpoint: FromStr::from_str(&token_endpoint).unwrap(),
             user: user
         }
     }
@@ -215,6 +219,7 @@ impl PasswordAuth {
     fn get_token(&self) -> ApiResult<String> {
         let mut req = http::Request::new(Post, self.token_endpoint.clone());
         req.headers_mut().set(ContentType(mime::APPLICATION_JSON));
+        req.headers_mut().set(ContentLength(self.body.len() as u64));
         req.set_body(self.body.clone());
         ApiResult::from_future(
             self.client.request(req).and_then(|resp| {
@@ -225,8 +230,12 @@ impl PasswordAuth {
 
     fn get_catalog(&self) -> ApiResult<protocol::CatalogRoot> {
         // TODO: catalog caching
-        let catalog_uri_s = format!("{}/v3/auth/catalog", self.auth_uri);
-        let catalog_uri = FromStr::from_str(&catalog_uri_s).unwrap();
+        let catalog_endpoint = if self.auth_uri.path().ends_with("/v3") {
+            format!("{}/auth/catalog", self.auth_uri)
+        } else {
+            format!("{}/v3/auth/catalog", self.auth_uri)
+        };
+        let catalog_uri = FromStr::from_str(&catalog_endpoint).unwrap();
         trace!("Requesting a service catalog from {}", catalog_uri);
         let req = Request::new(Get, catalog_uri);
         ApiResult::new(self.request(req))

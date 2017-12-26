@@ -13,28 +13,35 @@
 // limitations under the License.
 
 extern crate env_logger;
+extern crate futures;
 extern crate hyper;
+extern crate tokio_core;
+
 extern crate openstack;
+
+use futures::Future;
 
 
 #[cfg(feature = "compute")]
 fn main() {
-    env_logger::init().unwrap();
+    env_logger::init()
+        .expect("Unable to initialize logging");
+    let mut core = tokio_core::reactor::Core::new()
+        .expect("Unable to initialize reactor");
+    let auth = openstack::auth::Identity::from_env(&core.handle())
+        .expect("Unable to load authentication from the environment");
 
-    let identity = openstack::auth::Identity::from_env()
-        .expect("Failed to create an identity provider from the environment");
-    let session = openstack::Session::new(identity);
-    let server_manager = openstack::compute::v2::servers(&session);
-    let sorting = openstack::compute::v2::ServerSortKey::AccessIpv4;
+    let fut = openstack::compute::Compute::new(auth).and_then(|compute| {
+        let sorting = openstack::compute::v2::ServerSortKey::AccessIpv4;
+        compute.find_servers().sort_by(openstack::Sort::Asc(sorting)).fetch()
+    });
 
-    let servers = server_manager.query()
-        .sort_by(openstack::Sort::Asc(sorting))
-        .fetch().expect("Cannot list servers");
-    println!("All servers:");
+    let servers = core.run(fut).expect("Request failed");
     for s in &servers {
         println!("ID = {}, Name = {}", s.id(), s.name());
     }
 
+    /*
     let active = server_manager.query()
         .sort_by(openstack::Sort::Asc(sorting)).with_status("ACTIVE")
         .fetch().expect("Cannot list servers");
@@ -42,6 +49,7 @@ fn main() {
     for s in &active {
         println!("ID = {}, Name = {}", s.id(), s.name());
     }
+    */
 }
 
 #[cfg(not(feature = "compute"))]
