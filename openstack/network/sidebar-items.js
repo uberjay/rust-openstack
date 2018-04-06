@@ -1,0 +1,1 @@
+initSidebarItems({"enum":[["NetworkSortKey","Available sort keys."],["NetworkStatus","Possible network statuses."]],"struct":[["Network","Structure representing a single network."],["NetworkQuery","A query to network list."]]});
